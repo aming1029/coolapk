@@ -157,7 +157,8 @@
           <span v-if="inputMsg.length > 0" class="comment-word-count">
             {{ inputMsg.length }} / 1000
           </span>
-          <Button
+          <AppButton
+            type="button"
             variant="primary"
             size="sm"
             icon="fa-solid fa-paper-plane"
@@ -166,7 +167,7 @@
             @click="handleSend"
           >
             {{ replyTargetUser ? '回复' : '评论' }}
-          </Button>
+          </AppButton>
         </div>
       </div>
     </div>
@@ -545,7 +546,7 @@ import { usePlatformShortcuts } from '../../utils/shortcuts';
 import { useShortcutHints } from '../../composables/useShortcutHints';
 import AppAvatar from '../common/AppAvatar.vue';
 import UserHoverCard from '../user/UserHoverCard.vue';
-import Button from '../ui/Button.vue';
+import AppButton from '../common/AppButton.vue';
 import FeedImageGrid from './FeedImageGrid.vue';
 import { CoolapkTauriAPI } from '../../api/coolapk';
 import { useAuthStore } from '../../stores/auth';

@@ -1,5 +1,5 @@
 <template>
-  <Card class="trending-topics-card" :no-padding="true">
+  <AppCard class="trending-topics-card" :no-padding="true">
     <template #header>
       <div class="header-row">
         <div class="header-title-group">
@@ -23,11 +23,11 @@
         <span class="hashtag">#</span> {{ t }}
       </button>
     </div>
-  </Card>
+  </AppCard>
 </template>
 
 <script setup lang="ts">
-import Card from '../ui/Card.vue';
+import AppCard from '../common/AppCard.vue';
 
 withDefaults(
   defineProps<{

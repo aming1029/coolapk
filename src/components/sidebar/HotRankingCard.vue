@@ -1,5 +1,5 @@
 <template>
-  <Card class="hot-ranking-card" :no-padding="true">
+  <AppCard class="hot-ranking-card" :no-padding="true">
     <template #header>
       <div class="header-row">
         <div class="header-title-group">
@@ -27,11 +27,11 @@
         热门榜单加载中...
       </div>
     </div>
-  </Card>
+  </AppCard>
 </template>
 
 <script setup lang="ts">
-import Card from '../ui/Card.vue';
+import AppCard from '../common/AppCard.vue';
 
 defineProps<{
   list: any[];

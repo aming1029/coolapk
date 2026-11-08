@@ -245,7 +245,7 @@ describe('评论完整信息展示', () => {
       global: {
         stubs: {
           AppAvatar: true,
-          Button: {
+          AppButton: {
             props: ['loading', 'disabled'],
             template: '<button class="stub-button" :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
           },
@@ -371,7 +371,7 @@ describe('评论完整信息展示', () => {
         totalCommentCount: 22,
         comments: [{ id: 'reply-1', username: '测试酷友', message: '评论内容' }],
       },
-      global: { stubs: { AppAvatar: true, Button: true, FeedImageGrid: true } },
+      global: { stubs: { AppAvatar: true, AppButton: true, FeedImageGrid: true } },
     });
     expect(withTotal.find('.comment-title').text()).toBe('评论 22');
   });
