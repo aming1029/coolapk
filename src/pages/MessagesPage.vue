@@ -298,7 +298,6 @@
 
 <script setup lang="ts">
 import { vPullRefresh } from '../directives/pullRefresh';
-import { createEditorTextNodes } from "../utils/editorTextNodes";
 import { ref, onMounted, onUnmounted, onActivated, onDeactivated, nextTick, computed, watch } from 'vue';
 
 defineOptions({
@@ -316,23 +315,62 @@ import LoadingState from '../components/common/LoadingState.vue';
 import EmptyState from '../components/common/EmptyState.vue';
 import ErrorState from '../components/common/ErrorState.vue';
 import AppButton from '../components/common/AppButton.vue';
-import { EMOJI_MAP, EMOJI_BASE, getEmojiUrl } from '../utils/coolapkEmoji';
+import { EMOJI_MAP } from '../utils/coolapkEmoji';
 import { useRecentEmojis } from '../utils/recentEmojis';
 import EmojiPanel from '../components/common/EmojiPanel.vue';
 import { isSystemEmoji, type EmojiPicture } from '../utils/emojiPanel';
-import { renderCoolapkRichText } from '../utils/richText';
-import { coolapkHtmlToPlainText } from '../utils/sanitizeHtml';
 import { handleAnchorClick } from '../utils/anchorClick';
 import { clearMessageDraft, loadMessageDraft, saveMessageDraft } from '../utils/messageDrafts';
 import { isTouchMobilePlatform } from '../utils/platform';
 import { requestConfirmation } from '../utils/confirm';
 import { showToast } from '../utils/toast';
+import { getSelfMessageUnreadCount } from '../utils/messageUnread';
 import {
-  getMessageSenderUid,
-  getMessageUnreadCount,
-  getSelfMessageUnreadCount,
-  isMessageSentByCurrentUser,
-} from '../utils/messageUnread';
+  clearSessionUnreadState,
+  createChatHistoryPagination as createChatHistoryPaginationState,
+  formatMessageTime,
+  formatTime,
+  getChatHistoryItemId,
+  getChatHistoryItemKey,
+  getDateline,
+  getEntityTemplate,
+  getEntityType,
+  getMessageText,
+  getNewestChatHistoryCursor as getNewestChatHistoryCursorFor,
+  getOldestChatHistoryCursor as getOldestChatHistoryCursorFor,
+  getPicUrl,
+  getSessionKey as getSessionKeyFor,
+  getSessionPartnerAvatar,
+  getSessionPartnerUid as getSessionPartnerUidFor,
+  getSessionUnreadCount as getSessionUnreadCountFor,
+  getSessionUnreadLabel as getSessionUnreadLabelFor,
+  getSystemNoticeText,
+  getUsername,
+  isFollowTipEntity,
+  isSameSession as isSameSessionFor,
+  isSelf as isSelfFor,
+  isSessionUnread as isSessionUnreadFor,
+  isWarningNotice,
+  mergeChatHistory,
+  normalizeSessionUnreadState as normalizeSessionUnreadStateFor,
+  renderMessageContent,
+  renderSessionLastMessage,
+  sortChatHistory,
+  type ChatHistoryPaginationState,
+  type MessageLike,
+} from '../features/messages/messageModel';
+import {
+  appendPendingImageFiles,
+  clearPendingImageUrls,
+  createEmojiImage as createEmojiImg,
+  createRemotePendingImage,
+  extractStrayImagesFromEditor as extractStrayImages,
+  getEditorText,
+  parseTextToEditorNodes,
+  removePendingImageAt,
+  syncEditorText,
+  type PendingImageItem,
+} from '../features/messages/messageEditor';
 
 import { getDiagnosticLink } from '../utils/feedbackDiagnostics';
 
@@ -346,7 +384,17 @@ const authStore = useAuthStore();
 const notificationStore = useNotificationStore();
 const settingsStore = useSettingsStore();
 const showShortcutHints = useShortcutHints();
-const currentUserUid = computed(() => authStore.user?.uid || '');
+const currentUserUid = computed(() => String(authStore.user?.uid || ''));
+const getSessionPartnerUid = (session: MessageLike | null | undefined) => getSessionPartnerUidFor(session, currentUserUid.value);
+const getSessionKey = (session: MessageLike | null | undefined) => getSessionKeyFor(session);
+const getSessionUnreadCount = (session: MessageLike) => getSessionUnreadCountFor(session, currentUserUid.value);
+const getSessionUnreadLabel = (session: MessageLike) => getSessionUnreadLabelFor(session, currentUserUid.value);
+const isSessionUnread = (session: MessageLike) => isSessionUnreadFor(session, currentUserUid.value);
+const normalizeSessionUnreadState = (session: MessageLike | null | undefined) => normalizeSessionUnreadStateFor(session, currentUserUid.value);
+const isSameSession = (left: MessageLike | null | undefined, right: MessageLike | null | undefined) => isSameSessionFor(left, right, currentUserUid.value);
+const isSelf = (msg: MessageLike | null | undefined) => isSelfFor(msg, currentUserUid.value);
+const getOldestChatHistoryCursor = (items: MessageLike[]) => getOldestChatHistoryCursorFor(items);
+const getNewestChatHistoryCursor = (items: MessageLike[]) => getNewestChatHistoryCursorFor(items);
 
 const navigateToUser = (uid?: string | number) => {
   if (uid === undefined || uid === null || uid === '') return;
@@ -390,17 +438,8 @@ const historyLoadMoreError = ref('');
 const hasMoreHistory = ref(true);
 const isChatPositionReady = ref(false);
 const chatHistoryCache = new Map<string, any[]>();
-const getEntityType = (item: any) => String(item?.entityType ?? item?.entity_type ?? '').trim();
-const getEntityTemplate = (item: any) => String(item?.entityTemplate ?? item?.entity_template ?? '').trim();
-const isFollowTipEntity = (item: any) => getEntityType(item) === 'messageExtra' && getEntityTemplate(item) === 'float';
 const followTipEntity = computed(() => chatHistory.value.find(isFollowTipEntity) || null);
 const renderableChatHistory = computed(() => chatHistory.value.filter((item) => !isFollowTipEntity(item)));
-interface ChatHistoryPaginationState {
-  nextPage: number;
-  firstItem: string;
-  lastItem: string;
-  hasMore: boolean;
-}
 const chatHistoryPagination = new Map<string, ChatHistoryPaginationState>();
 let historyRequestSequence = 0;
 const refreshingHistoryRequests = new Set<number>();
@@ -422,137 +461,30 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const editorRef = ref<HTMLDivElement | null>(null);
 const chatAreaRef = ref<HTMLElement | null>(null);
 
-// --- 酷安富文本表情输入框工具函数 ---
-function createEmojiImg(name: string, _filename?: string): HTMLImageElement {
-  const img = document.createElement('img');
-  img.className = 'coolapk-emoji';
-  img.src = getEmojiUrl(name) || `${EMOJI_BASE}coolapk_emotion_1_hahaha.png`;
-  img.alt = `[${name}]`;
-  img.title = name;
-  img.setAttribute('data-emoji', `[${name}]`);
-  img.setAttribute('contenteditable', 'false');
-  return img;
-}
-
-function parseTextToEditorNodes(text: string): Node[] {
-  return createEditorTextNodes(text);
-}
-
-function getEditorText(el: HTMLElement | null): string {
-  if (!el) return '';
-  let result = '';
-  const traverse = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      result += node.textContent || '';
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      const element = node as HTMLElement;
-      if (element.tagName === 'IMG' && element.getAttribute('data-emoji')) {
-        result += element.getAttribute('data-emoji');
-      } else if (element.tagName === 'BR') {
-        result += '\n';
-      } else {
-        node.childNodes.forEach(traverse);
-        if (element.tagName === 'DIV' || element.tagName === 'P') {
-          if (node.nextSibling) result += '\n';
-        }
-      }
-    }
-  };
-  el.childNodes.forEach(traverse);
-  return result;
-}
-
-function syncTextToEditor(text: string) {
-  const el = editorRef.value;
-  if (!el) return;
-  el.innerHTML = '';
-  const nodes = parseTextToEditorNodes(text);
-  nodes.forEach((n) => el.appendChild(n));
-}
-
-interface PendingImageItem {
-  id: string;
-  file?: File;
-  url?: string;
-  previewUrl: string;
-}
-
 const pendingImages = ref<PendingImageItem[]>([]);
 
 function appendPendingImages(files: File[]) {
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-    const previewUrl = URL.createObjectURL(file);
-    pendingImages.value.push({
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      file,
-      previewUrl
-    });
-  }
+  pendingImages.value = appendPendingImageFiles(pendingImages.value, files);
 }
 
 function removePendingImage(index: number, force = false) {
   if (!force && (sending.value || sendingImage.value)) return;
-  const removed = pendingImages.value.splice(index, 1);
-  if (removed.length > 0 && removed[0].previewUrl.startsWith('blob:')) {
-    URL.revokeObjectURL(removed[0].previewUrl);
-  }
+  pendingImages.value = removePendingImageAt(pendingImages.value, index);
 }
 
 function clearPendingImages() {
-  for (const item of pendingImages.value) {
-    if (item.previewUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(item.previewUrl);
-    }
-  }
+  clearPendingImageUrls(pendingImages.value);
   pendingImages.value = [];
 }
 
-async function convertSrcToFile(src: string): Promise<File | null> {
-  try {
-    if (src.startsWith('data:')) {
-      const parts = src.split(',');
-      const mimeMatch = parts[0].match(/:(.*?);/);
-      const mime = mimeMatch ? mimeMatch[1] : 'image/png';
-      const bstr = atob(parts[1]);
-      let n = bstr.length;
-      const u8arr = new Uint8Array(n);
-      while (n--) {
-        u8arr[n] = bstr.charCodeAt(n);
-      }
-      const ext = mime.split('/')[1] || 'png';
-      return new File([u8arr], `pasted_${Date.now()}.${ext}`, { type: mime });
-    }
-    const res = await fetch(src);
-    const blob = await res.blob();
-    const mime = blob.type || 'image/png';
-    const ext = mime.split('/')[1] || 'png';
-    return new File([blob], `pasted_${Date.now()}.${ext}`, { type: mime });
-  } catch (e) {
-    console.error('Failed to convert image src to file', e);
-    return null;
-  }
+function syncTextToEditor(text: string) {
+  syncEditorText(editorRef.value, text);
 }
 
 async function extractStrayImagesFromEditor() {
-  const el = editorRef.value;
-  if (!el) return;
-  const strayImgs = el.querySelectorAll<HTMLImageElement>('img:not([data-emoji])');
-  if (strayImgs.length === 0) return;
-
-  const files: File[] = [];
-  for (const img of Array.from(strayImgs)) {
-    const src = img.src;
-    img.remove();
-    if (src) {
-      const f = await convertSrcToFile(src);
-      if (f) files.push(f);
-    }
-  }
-  if (files.length > 0) {
-    appendPendingImages(files);
-  }
-  inputText.value = getEditorText(el);
+  const files = await extractStrayImages(editorRef.value);
+  if (files.length > 0) appendPendingImages(files);
+  inputText.value = getEditorText(editorRef.value);
 }
 
 function handleEditorInput() {
@@ -875,69 +807,6 @@ function persistSessionsCache() {
   }
 }
 
-// --- 字段提取工具（基于酷安真实 API 数据结构精确适配） ---
-// 酷安 API 中：fromuid = 消息发送者，uid = 消息接收者
-// 会话列表中：messageUid / messageUsername / messageUserAvatar = 对方信息
-
-/**
- * 从会话列表项中提取对方（聊天伙伴）的 uid。
- * 会话列表 API 返回 messageUid 字段专门表示对方 uid。
- */
-const getSessionPartnerUid = (session: any) => {
-  if (!session) return '';
-  if (session.messageUid) return session.messageUid;
-
-  // 兼容缺少 messageUid 的旧响应：根据 fromuid（发送者）和 uid（接收者）
-  // 排除当前账号，避免自己发消息时把会话错误地指向自己的 UID。
-  const senderUid = getMessageSenderUid(session);
-  const recipientUid = String(session.uid ?? session.toUid ?? session.to_uid ?? '').trim();
-  const myUid = String(currentUserUid.value || '').trim();
-  if (myUid && senderUid === myUid && recipientUid) return recipientUid;
-  if (myUid && recipientUid === myUid && senderUid) return senderUid;
-  return session.fromuid || session.uid || '';
-};
-
-const getSessionKey = (session: any) => String(session?.ukey || session?.id || '').trim();
-
-const getSessionUnreadCount = (session: any) => {
-  return getMessageUnreadCount(session, currentUserUid.value);
-};
-
-const getSessionUnreadLabel = (session: any) => {
-  const unreadCount = getSessionUnreadCount(session);
-  return unreadCount > 99 ? '99+' : String(unreadCount);
-};
-
-const isSessionUnread = (session: any) => getSessionUnreadCount(session) > 0;
-
-/** 服务端把自己发出的最后一条消息标为未读时，清除所有相关字段但保留其余会话数据。 */
-const normalizeSessionUnreadState = (session: any) => {
-  if (!session || !isMessageSentByCurrentUser(session, currentUserUid.value)) return session;
-  const normalized = { ...session };
-  clearSessionUnreadState(normalized);
-  return normalized;
-};
-
-const isSameSession = (left: any, right: any) => {
-  if (!left || !right) return false;
-  const leftKey = getConversationKey(left);
-  const rightKey = getConversationKey(right);
-  if (leftKey && rightKey && leftKey === rightKey) return true;
-  const leftUid = String(getSessionPartnerUid(left) || '');
-  const rightUid = String(getSessionPartnerUid(right) || '');
-  return Boolean(leftUid && rightUid && leftUid === rightUid);
-};
-
-const clearSessionUnreadState = (session: any) => {
-  if (!session) return;
-  session.isnew = 0;
-  session.isNew = false;
-  session.unreadNum = 0;
-  session.unread_num = 0;
-  session.unread_count = 0;
-  session.unreadCount = 0;
-};
-
 /** 同时清理接口对象、当前会话和列表中的同一会话，避免轮询替换对象后角标残留。 */
 const markSessionRead = (session: any) => {
   if (!session) return false;
@@ -953,245 +822,13 @@ const markSessionRead = (session: any) => {
 
 const getRouteTargetUid = () => String(route.query.uid || route.query.targetUid || '').trim();
 
-/**
- * 从会话列表项中提取对方的用户名。
- * 优先使用 messageUsername，其次 fromusername。
- */
-const getUsername = (session: any) => {
-  if (!session) return '未知酷友';
-  return session.messageUsername || session.fromusername || session.username || '未知酷友';
-};
-
-/**
- * 从会话列表项中提取对方的头像 URL。
- * 优先使用 messageUserAvatar / fromUserAvatar（对方头像），
- * 而非 userAvatar（可能是自己的头像）。
- */
-const getSessionPartnerAvatar = (session: any) => {
-  if (!session) return '';
-  return session.messageUserAvatar || session.fromUserAvatar
-    || session.messageUserInfo?.userAvatar || '';
-};
-
-// 会话列表摘要：message 可能为富文本 HTML，转纯文本展示
-const getLastMessage = (item: any) =>
-  coolapkHtmlToPlainText(item.message || item.lastMessage || item.summary || item.last_message || '');
-const getMessageText = (item: any) => item.message || item.text || item.content || '';
-const getDateline = (item: any) => item.dateline || item.lastupdate || item.time || item.created_at || 0;
-
-const getPicUrl = (msg: any) => {
-  if (!msg) return '';
-  const pic = msg.message_pic || msg.pic || msg.image;
-  if (!pic) return '';
-  // 私信图片消息走官方 showImage 接口（图片数据需登录态 + App Token 认证）
-  if (msg.message_pic && msg.id) {
-    return `https://api.coolapk.com/v6/message/showImage?id=${msg.id}&type=n`;
-  }
-  if (pic.startsWith('/')) {
-    return `https://image.coolapk.com${pic}`;
-  }
-  return pic;
-};
-
-const renderMessageContent = (msg: any) => {
-  if (!msg) return '';
-  const text = getMessageText(msg);
-  if (!text) return '';
-  return renderCoolapkRichText(text);
-};
-
-const renderSessionLastMessage = (session: any) => {
-  const text = getLastMessage(session);
-  if (!text) return '';
-  return renderCoolapkRichText(text);
-};
-
-const getSystemNoticeText = (msg: any) => {
-  if (!msg) return '';
-  return msg.title || msg.message || msg.text || '';
-};
-
-const isWarningNotice = (msg: any) => {
-  const text = getSystemNoticeText(msg);
-  return text.includes('交易') || text.includes('防骗') || text.includes('损失') || text.includes('现金') || text.includes('陌生人');
-};
-
-// --- 辅助函数 ---
-function padZero(num: number): string {
-  return num < 10 ? `0${num}` : String(num);
-}
-
-/**
- * 会话列表时间显示（紧凑且清晰）：
- * - 今天：14:30
- * - 昨天：昨天
- * - 今年其他日期：08-25
- * - 往年（跨年）：2025-05-23
- */
-const formatSessionTime = (time: number | string) => {
-  if (!time) return '';
-  const date = new Date(typeof time === 'number' && time < 10000000000 ? time * 1000 : time);
-  if (Number.isNaN(date.getTime())) return '';
-
-  const now = new Date();
-  const year = date.getFullYear();
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const hours = padZero(date.getHours());
-  const minutes = padZero(date.getMinutes());
-
-  // 今天：显示具体时分
-  const isToday = year === now.getFullYear() && date.getMonth() === now.getMonth() && day === now.getDate();
-  if (isToday) {
-    return `${hours}:${minutes}`;
-  }
-
-  // 昨天：显示“昨天”
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  const isYesterday = year === yesterday.getFullYear() && date.getMonth() === yesterday.getMonth() && day === yesterday.getDate();
-  if (isYesterday) {
-    return '昨天';
-  }
-
-  // 今年其他日期：显示 MM-DD
-  if (year === now.getFullYear()) {
-    return `${padZero(month)}-${padZero(day)}`;
-  }
-
-  // 跨年（非今年）：显示完整 YYYY-MM-DD
-  return `${year}-${padZero(month)}-${padZero(day)}`;
-};
-
-/**
- * 聊天气泡消息时间显示：
- * - 今天：14:30
- * - 昨天：昨天 14:30
- * - 今年其他日期：08-25 14:30
- * - 往年（跨年）：2025-05-23 14:30
- */
-const formatMessageTime = (time: number | string) => {
-  if (!time) return '';
-  const date = new Date(typeof time === 'number' && time < 10000000000 ? time * 1000 : time);
-  if (Number.isNaN(date.getTime())) return '';
-
-  const now = new Date();
-  const year = date.getFullYear();
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const hours = padZero(date.getHours());
-  const minutes = padZero(date.getMinutes());
-  const timeStr = `${hours}:${minutes}`;
-
-  const isToday = year === now.getFullYear() && date.getMonth() === now.getMonth() && day === now.getDate();
-  if (isToday) {
-    return timeStr;
-  }
-
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  const isYesterday = year === yesterday.getFullYear() && date.getMonth() === yesterday.getMonth() && day === yesterday.getDate();
-  if (isYesterday) {
-    return `昨天 ${timeStr}`;
-  }
-
-  if (year === now.getFullYear()) {
-    return `${padZero(month)}-${padZero(day)} ${timeStr}`;
-  }
-
-  return `${year}-${padZero(month)}-${padZero(day)} ${timeStr}`;
-};
-
-const formatTime = formatSessionTime;
-
-/**
- * 判断一条聊天消息是否是自己发出的。
- * 酷安私信 API 中 fromuid = 发送者，uid = 接收者。
- * 当 fromuid 等于自己的 uid 时，表示这条消息是自己发出的。
- */
-const isSelf = (msg: any) => {
-  if (!msg || !msg.fromuid) return false;
-  const myUid = String(currentUserUid.value || '');
-  return String(msg.fromuid) === myUid;
-};
-
 const chatScrollMap = new Map<string, { top: number; atBottom: boolean }>();
 let messagePageActive = true;
-
-function getChatHistoryItemId(item: any): string {
-  return String(item?.entityId ?? item?.entity_id ?? item?.id ?? '').trim();
-}
-
-function getChatHistoryItemKey(item: any): string {
-  const itemId = getChatHistoryItemId(item);
-  if (itemId) return itemId;
-  const dateline = String(item?.dateline ?? '');
-  const sender = String(item?.fromuid ?? item?.fromUid ?? item?.uid ?? '');
-  const message = String(item?.message ?? item?.messageText ?? '');
-  const picture = String(item?.message_pic ?? item?.messagePic ?? '');
-  return dateline || sender || message || picture ? `fallback:${dateline}:${sender}:${message}:${picture}` : '';
-}
-
-function sortChatHistory(items: any[]): any[] {
-  return [...items].sort((a, b) => (getDateline(a) || 0) - (getDateline(b) || 0));
-}
-
-function mergeChatHistory(existing: any[], incoming: any[], prepend = false): any[] {
-  const unmatchedIncoming = [...incoming];
-  const existingIds = new Set(existing.filter((item) => !item.__localPending).map(getChatHistoryItemId).filter(Boolean));
-  // 发送接口偶尔不返回消息 ID。历史记录到达后，用同一发送者、内容和时间
-  // 对应的服务端消息替换临时气泡，每条历史消息最多匹配一个临时气泡。
-  const reconciledExisting = existing.filter((item) => {
-    if (!item.__localPending) return true;
-    const matchIndex = unmatchedIncoming.findIndex((serverItem) =>
-      getChatHistoryItemId(serverItem)
-      && !existingIds.has(getChatHistoryItemId(serverItem))
-      && String(serverItem.fromuid ?? serverItem.fromUid ?? '') === String(item.fromuid ?? '')
-      && String(getMessageText(serverItem)) === String(getMessageText(item))
-      && String(serverItem.message_pic ?? serverItem.messagePic ?? '') === String(item.message_pic ?? '')
-      && Math.abs(Number(getDateline(serverItem)) - Number(getDateline(item))) <= 60,
-    );
-    if (matchIndex < 0) return true;
-    unmatchedIncoming.splice(matchIndex, 1);
-    return false;
-  });
-  const result = prepend ? [...incoming, ...reconciledExisting] : [...reconciledExisting, ...incoming];
-  const seen = new Set<string>();
-  return result.filter((item) => {
-    const key = getChatHistoryItemKey(item);
-    if (!key) return true;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function getOldestChatHistoryCursor(items: any[]): string {
-  for (const item of items) {
-    // APK 会跳过关注提示等浮层，只用真实消息或时间项的 entityId 翻页。
-    if (item.__localPending || (getEntityType(item) === 'messageExtra' && getEntityTemplate(item) !== 'time')) continue;
-    const itemId = getChatHistoryItemId(item);
-    if (itemId) return itemId;
-  }
-  return '';
-}
-
-function getNewestChatHistoryCursor(items: any[]): string {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item.__localPending || (getEntityType(item) === 'messageExtra' && getEntityTemplate(item) !== 'time')) continue;
-    const itemId = getChatHistoryItemId(item);
-    if (itemId) return itemId;
-  }
-  return '';
-}
-
-function createChatHistoryPagination(items: any[] = [], nextPage = 2): ChatHistoryPaginationState {
-  return { nextPage, firstItem: getOldestChatHistoryCursor(items), lastItem: '', hasMore: items.length > 0 };
-}
 
 function getChatHistoryPagination(sessionKey: string): ChatHistoryPaginationState {
   const cached = chatHistoryPagination.get(sessionKey);
   if (cached) return cached;
-  const created = createChatHistoryPagination(chatHistoryCache.get(sessionKey) || []);
+  const created = createChatHistoryPaginationState(chatHistoryCache.get(sessionKey) || []);
   chatHistoryPagination.set(sessionKey, created);
   return created;
 }
@@ -1635,7 +1272,7 @@ const selectSession = async (session: any) => {
     loadingHistory.value = false;
     await scrollToBottom();
   } else {
-    chatHistoryPagination.set(sessionKey, createChatHistoryPagination());
+    chatHistoryPagination.set(sessionKey, createChatHistoryPaginationState());
     hasMoreHistory.value = true;
     loadingHistory.value = true;
     chatHistory.value = [];
@@ -1659,7 +1296,7 @@ const selectSession = async (session: any) => {
       const cachedPagination = hasCachedHistory ? chatHistoryPagination.get(sessionKey) : null;
       const pagination = cachedPagination
         ? { ...cachedPagination, firstItem: getOldestChatHistoryCursor(list), lastItem: '' }
-        : createChatHistoryPagination(list);
+        : createChatHistoryPaginationState(list);
       chatHistoryPagination.set(sessionKey, pagination);
       hasMoreHistory.value = pagination.hasMore;
       historyLoadMoreError.value = '';
@@ -1871,7 +1508,7 @@ const triggerImageSelect = () => {
 const selectFavoritePicture = (picture: EmojiPicture) => {
   if (sending.value || sendingImage.value) return;
   if (pendingImages.value.some(image => image.url === picture.url)) { showToast('已经添加了', 'info'); return; }
-  pendingImages.value.push({ id: `favorite_${picture.id}`, url: picture.url, previewUrl: picture.url });
+  pendingImages.value.push(createRemotePendingImage(picture.url, `favorite_${picture.id}`));
 };
 
 const handleImageSelected = async (e: Event) => {
