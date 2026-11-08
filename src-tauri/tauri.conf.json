@@ -1,0 +1,76 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "coolapk",
+  "version": "2.0.0",
+  "identifier": "com.kean.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:17520",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "coolapk",
+        "width": 1440,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' blob: ipc: http://ipc.localhost ws://127.0.0.1:17520 http://127.0.0.1:17520 http://127.0.0.1:8080 https://api.coolapk.com https://api2.coolapk.com https://api.github.com https://cstaticdun.126.net https://*.dun.163.com https://*.163yun.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https: coolapk-video: http://coolapk-video.localhost; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-eval' https://cstaticdun.126.net https://*.dun.163.com https://*.163yun.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src https://cstaticdun.126.net https://*.dun.163.com https://*.163yun.com"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "coolmarket"
+        ]
+      }
+    },
+    "macos-fps": {
+      "enabled": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "bundleVersion": "200.9.99"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
+      }
+    },
+    "android": {
+      "versionCode": 200000999
+    },
+    "iOS": {
+      "bundleVersion": "200.9.99"
+    }
+  }
+}

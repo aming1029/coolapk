@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "coolapk",
+        "width": 1440,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "resources": {
+      "resources/WebView2Loader.dll": "WebView2Loader.dll"
+    }
+  }
+}

@@ -1,0 +1,923 @@
+import { defineStore } from 'pinia';
+import { listenMediaQuery } from '../utils/mediaQuery';
+import { ref, watch, onScopeDispose } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { resolveDeviceIdentity } from '../utils/devicePresets';
+import { resolveDesktopCommentsOnRight } from '../utils/desktopCommentsPreference';
+import { normalizeSearchTabOrder } from '../utils/searchTabOrder';
+import { normalizeLightBackground, buildLightBackground } from '../utils/lightBackground';
+import { isLinuxDesktopRuntime, observeLinuxSystemTheme, type SystemTheme } from '../utils/linuxSystemTheme';
+import { isTouchMobilePlatform } from '../utils/platform';
+import type {
+  AppSettings,
+  ThemeMode,
+  FeedDensity,
+  GlassChromeLevel,
+  ImageQuality,
+  FontFamily,
+  AccentColor,
+  NavVisibilitySettings,
+  DeviceFingerprintSettings,
+  FavoriteCollectionViewMode,
+  FavoriteCollectionSortMode,
+  FavoriteCollectionSortDirection,
+  CommentSortPreference,
+  TopicDiscussionSortPreference,
+  HomeTabKey,
+} from '../types/settings';
+
+const STORAGE_KEY = 'coolapk_desktop_settings';
+const SETTINGS_FILE = 'settings.json';
+const DEFAULT_ZOOM = 100;
+const MIN_ZOOM = 50;
+const MAX_ZOOM = 200;
+const DEFAULT_HOME_TAB_ORDER: string[] = [];
+
+function clampZoom(zoom: number) {
+  const safeZoom = Number.isFinite(zoom) ? zoom : DEFAULT_ZOOM;
+  return Math.min(Math.max(safeZoom, MIN_ZOOM), MAX_ZOOM);
+}
+
+function getSystemZoom() {
+  // 桌面端 WebView2 已按系统显示缩放（DPI）自动渲染，CSS 像素即逻辑像素，
+  // 与系统所有应用保持一致。若再按 devicePixelRatio 额外放大，
+  // 会与系统缩放双重叠加（如 150% × 150%）导致界面过大，
+  // 因此自动基准固定为 100%，需要更大或更小由用户手动微调。
+  return DEFAULT_ZOOM;
+}
+
+const defaultNavVisibility: NavVisibilitySettings = {
+  home: true,
+  feeds: true,
+  discover: true,
+  apps: true,
+  games: true,
+  digital: true,
+  topics: true,
+  reviews: true,
+  secondhand: true,
+  albums: true,
+  pictures: true,
+  my_products: true,
+  notifications: true,
+  favorites: true,
+  history: true,
+  messages: true,
+  following: true,
+  downloads: true,
+  goods: true,
+  events: true,
+  nodes: true,
+  anylist: true,
+  mydyh: true,
+  more: true,
+  my: true,
+  my_likes: true,
+  my_comments: true,
+  my_feeds: true,
+  my_recent: true,
+  followed_nodes: true,
+  followed_topics: true,
+  followed_collections: true,
+  followed_questions: true,
+  followed_products: true,
+  recent_contacts: true,
+  recycle_bin: true,
+  hidden_replies: true,
+  my_devices: true,
+  my_albums: true,
+  my_votes: true,
+};
+
+/** 默认设备信息：与 Rust 客户端 CoolapkClient::new() 内置的默认头一致 */
+const defaultDeviceFingerprint: DeviceFingerprintSettings = {
+  customFingerprint: false,
+  deviceId: '',
+  ddid: '',
+  model: '23113RKC6C',
+  androidVersion: '16',
+  build: 'AQ3A.250226.002',
+  rom: '',
+  appVersion: '16.6.5',
+  appCode: '2610162',
+  sdkInt: '36',
+  locale: 'zh-CN',
+  darkMode: '0',
+};
+
+/** 由设备信息字段拼装酷安移动端 User-Agent */
+export function buildDeviceUserAgent(f: DeviceFingerprintSettings): string {
+  const model = f.model.trim() || defaultDeviceFingerprint.model;
+  const android = f.androidVersion.trim() || defaultDeviceFingerprint.androidVersion;
+  const build = f.build.trim() || defaultDeviceFingerprint.build;
+  const version = f.appVersion.trim() || defaultDeviceFingerprint.appVersion;
+  const code = f.appCode.trim() || defaultDeviceFingerprint.appCode;
+  const { brand } = resolveDeviceIdentity({ ...f, model });
+  const rom = f.rom?.trim() || android;
+  return `Dalvik/2.1.0 (Linux; U; Android ${android}; ${model} Build/${build}) (#Build; ${brand}; ${model}; ${build}; ${rom}) +CoolMarket/${version}-${code}-universal`;
+}
+
+const defaultSettings: AppSettings = {
+  theme: 'system',
+  density: 'standard',
+  feedLayout: 'single',
+  fontFamily: '',
+  fontSize: 15,
+  zoom: DEFAULT_ZOOM,
+  zoomManuallySet: false,
+  sidebarCollapsed: false,
+  showPageTabBar: true,
+  disableAutoMobileMode: false,
+  officialMobileFeedDetail: true,
+  desktopFeedDetailOnClick: false,
+  desktopCommentsOnRight: false,
+  desktopCommentsDefaultOffMigrated: true,
+  myRecentPinned: false,
+  moreExpanded: false,
+  reduceMotion: false,
+  accentColor: 'green',
+  lightBackgroundColor: '',
+  collapseLines: 12,
+  autoPlayGif: true,
+  autoPlayLivePhotoSound: false,
+  suppressUnsupportedLivePhotoCodecPrompt: false,
+  autoLoadOriginalImage: true,
+  noImageMode: false,
+  showImagesInDetail: false,
+  adaptiveFeedImages: false,
+  showDeviceInfo: true,
+  showFeedBackground: true,
+  showHomeMonthlyRank: true,
+  showHomeHotNews: true,
+  homeSidebarRankPeriod: 'day',
+  showHomeHotTopics: true,
+  autoHideMobileNavigation: true,
+  glassChrome: 'off',
+  jellyNav: false,
+  defaultHomeTab: 'digest',
+  liveTileEnabled: false,
+  liveTileSource: 'index_v8',
+  homeTabOrder: [...DEFAULT_HOME_TAB_ORDER],
+  searchTabOrder: [],
+  favoriteCollectionViewMode: 'large',
+  favoriteCollectionSortMode: 'default',
+  favoriteCollectionSortDirection: 'asc',
+  commentDefaultSortMode: 'default',
+  topicDiscussionDefaultSortMode: 'latest',
+  downloadPath: '',
+  maxConcurrentDownloads: 3,
+  autoCleanCache: true,
+  cacheThresholdMB: 500,
+  cacheTtlDays: 7,
+  cachePath: '',
+  imageQuality: 'hd',
+  navVisibility: { ...defaultNavVisibility },
+  checkUpdateOnStartup: true,
+  ignoredUpdateVersion: '',
+  ignoreAllUpdates: false,
+  closeToTray: false,
+  autostart: false,
+  startMinimized: false,
+  alwaysOnTop: false,
+  // 窗口几何默认自动记忆；用户可在“启动与行为”中关闭。
+  rememberWindowState: true,
+  notifyReplies: true,
+  notifyAt: true,
+  notifyPm: true,
+  desktopNotifications: false,
+  androidBackgroundNotifications: false,
+  notificationSound: true,
+  notificationPollInterval: 1,
+  externalLinkMode: 'internal',
+  timeDisplay: 'relative',
+  messageEnterBehavior: 'send',
+  blockedKeywords: [],
+  publishDeviceSignature: true,
+  deviceSignature: '',
+  imageOpenMode: 'internal',
+  updateSpeedLimitKBps: 0,
+  networkProxyUrl: '',
+  notifyDownloadComplete: true,
+  updateChannel: 'stable',
+  experimentalFeatures: false,
+  deviceFingerprint: { ...defaultDeviceFingerprint },
+};
+
+type SettingsFileStore = {
+  entries<T>(): Promise<Array<[string, T]>>;
+  keys(): Promise<string[]>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  save(): Promise<void>;
+};
+
+function cloneDefaultSettings(): AppSettings {
+  return {
+    ...defaultSettings,
+    navVisibility: { ...defaultNavVisibility },
+    homeTabOrder: [...DEFAULT_HOME_TAB_ORDER],
+    searchTabOrder: [],
+    blockedKeywords: [],
+    deviceFingerprint: { ...defaultDeviceFingerprint },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
+  return typeof value === 'string' && (values as readonly string[]).includes(value);
+}
+
+function readBoolean(value: unknown, fallback: boolean) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function readString(value: unknown, fallback: string) {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function readNumber(value: unknown, fallback: number, min: number, max: number) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(value, min), max);
+}
+
+function normalizeFontFamily(value: unknown, fallback = ''): FontFamily {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim();
+  if (!normalized || normalized === 'system') return '';
+  // 兼容上一版未发布的固定选项设置，避免本地测试配置留下无效的 CSS 字体名。
+  if (normalized === 'noto-sans-sc') return 'Noto Sans SC';
+  if (normalized.length > 128 || /[\u0000-\u001f\u007f]/.test(normalized)) return fallback;
+  return normalized;
+}
+
+/** 只接受已知类型和取值，避免损坏的 JSON 让页面出现不可用设置。 */
+export function normalizeSettings(value: unknown): AppSettings {
+  const source = isRecord(value) ? value : {};
+  const result = cloneDefaultSettings();
+  if (isOneOf(source.theme, ['light', 'dark', 'system'])) result.theme = source.theme;
+  if (isOneOf(source.density, ['comfortable', 'standard', 'compact'])) result.density = source.density;
+  if (isOneOf(source.feedLayout, ['single', 'double'])) result.feedLayout = source.feedLayout;
+  result.fontFamily = normalizeFontFamily(source.fontFamily, result.fontFamily);
+  if (isOneOf(source.accentColor, ['green', 'blue', 'violet', 'orange'])) result.accentColor = source.accentColor;
+  result.lightBackgroundColor = normalizeLightBackground(source.lightBackgroundColor);
+  if (isOneOf(source.defaultHomeTab, ['index_v8', 'digest', 'hot', 'latest', 'cool_picture', 'secondhand', 'pictures', 'dyh'])) result.defaultHomeTab = source.defaultHomeTab;
+  result.liveTileEnabled = readBoolean(source.liveTileEnabled, result.liveTileEnabled);
+  if (isOneOf(source.liveTileSource, ['index_v8', 'hot', 'news', 'digest'])) {
+    result.liveTileSource = source.liveTileSource;
+  }
+  if (isOneOf(source.favoriteCollectionViewMode, ['large', 'single', 'double', 'no-image'])) result.favoriteCollectionViewMode = source.favoriteCollectionViewMode as FavoriteCollectionViewMode;
+  const hasSavedCollectionSortDirection = isOneOf(source.favoriteCollectionSortDirection, ['asc', 'desc']);
+  if (hasSavedCollectionSortDirection) result.favoriteCollectionSortDirection = source.favoriteCollectionSortDirection as FavoriteCollectionSortDirection;
+  if (source.favoriteCollectionSortMode === 'item-count-desc' || source.favoriteCollectionSortMode === 'item-count-asc') {
+    result.favoriteCollectionSortMode = 'item-count';
+    result.favoriteCollectionSortDirection = source.favoriteCollectionSortMode === 'item-count-desc' ? 'desc' : 'asc';
+  } else if (source.favoriteCollectionSortMode === 'favorite-count-desc') {
+    result.favoriteCollectionSortMode = 'favorite-count';
+    result.favoriteCollectionSortDirection = 'desc';
+  } else if (source.favoriteCollectionSortMode === 'follower-count-desc') {
+    result.favoriteCollectionSortMode = 'follower-count';
+    result.favoriteCollectionSortDirection = 'desc';
+  } else if (isOneOf(source.favoriteCollectionSortMode, ['default', 'name', 'item-count', 'favorite-count', 'follower-count'])) {
+    result.favoriteCollectionSortMode = source.favoriteCollectionSortMode as FavoriteCollectionSortMode;
+  }
+  if (isOneOf(source.commentDefaultSortMode, ['default', 'likes', 'latest'])) result.commentDefaultSortMode = source.commentDefaultSortMode as CommentSortPreference;
+  if (source.topicDiscussionDefaultSortMode === 'likes') result.topicDiscussionDefaultSortMode = 'hot';
+  else if (isOneOf(source.topicDiscussionDefaultSortMode, ['default', 'latest', 'hot'])) result.topicDiscussionDefaultSortMode = source.topicDiscussionDefaultSortMode as TopicDiscussionSortPreference;
+  if (Array.isArray(source.homeTabOrder)) {
+    // 首页频道由服务端动态下发，不能用本地静态列表过滤，否则每次重启都会丢失
+    // 用户在频道管理器中保存的排序和隐藏状态。
+    const valid = source.homeTabOrder.filter(
+      (item): item is HomeTabKey => typeof item === 'string' && item.trim().length > 0 && item.length <= 512,
+    );
+    result.homeTabOrder = [...new Set(valid)];
+  }
+  result.searchTabOrder = normalizeSearchTabOrder(source.searchTabOrder);
+  if (isOneOf(source.imageQuality, ['standard', 'hd', 'raw'])) result.imageQuality = source.imageQuality;
+  if (isOneOf(source.externalLinkMode, ['internal', 'system'])) result.externalLinkMode = source.externalLinkMode;
+  if (isOneOf(source.timeDisplay, ['relative', 'absolute'])) result.timeDisplay = source.timeDisplay;
+  if (isOneOf(source.messageEnterBehavior, ['send', 'newline'])) result.messageEnterBehavior = source.messageEnterBehavior;
+  if (isOneOf(source.imageOpenMode, ['internal', 'system'])) result.imageOpenMode = source.imageOpenMode;
+  if (isOneOf(source.updateChannel, ['stable', 'beta'])) result.updateChannel = source.updateChannel;
+  result.fontSize = readNumber(source.fontSize, result.fontSize, 12, 20);
+  result.zoom = readNumber(source.zoom, result.zoom, MIN_ZOOM, MAX_ZOOM);
+  result.zoomManuallySet = readBoolean(source.zoomManuallySet, result.zoomManuallySet);
+  result.sidebarCollapsed = readBoolean(source.sidebarCollapsed, result.sidebarCollapsed);
+  result.showPageTabBar = readBoolean(source.showPageTabBar, result.showPageTabBar);
+  result.disableAutoMobileMode = readBoolean(source.disableAutoMobileMode, result.disableAutoMobileMode);
+  result.officialMobileFeedDetail = readBoolean(source.officialMobileFeedDetail, result.officialMobileFeedDetail);
+  result.desktopFeedDetailOnClick = readBoolean(source.desktopFeedDetailOnClick, result.desktopFeedDetailOnClick);
+  // 旧版本可能已把默认开启写入磁盘：首次升级统一关闭，之后尊重用户手动调整。
+  result.desktopCommentsOnRight = resolveDesktopCommentsOnRight(source.desktopCommentsOnRight, source.desktopCommentsDefaultOffMigrated);
+  result.desktopCommentsDefaultOffMigrated = true;
+  result.myRecentPinned = readBoolean(source.myRecentPinned, readBoolean(source.sidebarMyCardsPinned, result.myRecentPinned));
+  result.moreExpanded = readBoolean(source.moreExpanded, result.moreExpanded);
+  result.reduceMotion = readBoolean(source.reduceMotion, result.reduceMotion);
+  result.collapseLines = [0, 8, 12, 18].includes(Number(source.collapseLines)) ? Number(source.collapseLines) : result.collapseLines;
+  result.autoPlayGif = readBoolean(source.autoPlayGif, result.autoPlayGif);
+  result.autoPlayLivePhotoSound = readBoolean(source.autoPlayLivePhotoSound, result.autoPlayLivePhotoSound);
+  result.suppressUnsupportedLivePhotoCodecPrompt = readBoolean(source.suppressUnsupportedLivePhotoCodecPrompt, result.suppressUnsupportedLivePhotoCodecPrompt);
+  result.autoLoadOriginalImage = readBoolean(source.autoLoadOriginalImage, result.autoLoadOriginalImage);
+  result.noImageMode = readBoolean(source.noImageMode, result.noImageMode);
+  result.showImagesInDetail = readBoolean(source.showImagesInDetail, result.showImagesInDetail);
+  result.adaptiveFeedImages = readBoolean(source.adaptiveFeedImages, result.adaptiveFeedImages);
+  result.showDeviceInfo = readBoolean(source.showDeviceInfo, result.showDeviceInfo);
+  result.showFeedBackground = readBoolean(source.showFeedBackground, result.showFeedBackground);
+  result.showHomeMonthlyRank = readBoolean(source.showHomeMonthlyRank, result.showHomeMonthlyRank);
+  result.showHomeHotNews = readBoolean(source.showHomeHotNews, result.showHomeHotNews);
+  result.homeSidebarRankPeriod = ['day', 'week', 'month'].includes(String(source.homeSidebarRankPeriod)) ? source.homeSidebarRankPeriod as AppSettings['homeSidebarRankPeriod'] : result.homeSidebarRankPeriod;
+  result.showHomeHotTopics = readBoolean(source.showHomeHotTopics, result.showHomeHotTopics);
+  result.autoHideMobileNavigation = readBoolean(source.autoHideMobileNavigation, result.autoHideMobileNavigation);
+  if (isOneOf(source.glassChrome, ['off', 'soft', 'strong'])) result.glassChrome = source.glassChrome;
+  // 旧版「液态玻璃」开关已并入玻璃质感：开启过就迁移到「柔和」，避免升级后效果丢失。
+  else if (source.headerGlass === true) result.glassChrome = 'soft';
+  result.jellyNav = readBoolean(source.jellyNav, result.jellyNav);
+  result.downloadPath = readString(source.downloadPath, result.downloadPath);
+  result.maxConcurrentDownloads = [1, 2, 3, 4, 5, 6, 8].includes(Number(source.maxConcurrentDownloads)) ? Number(source.maxConcurrentDownloads) : result.maxConcurrentDownloads;
+  result.autoCleanCache = readBoolean(source.autoCleanCache, result.autoCleanCache);
+  result.cacheThresholdMB = [200, 500, 1000, 2000].includes(Number(source.cacheThresholdMB)) ? Number(source.cacheThresholdMB) : result.cacheThresholdMB;
+  result.cacheTtlDays = [0, 1, 3, 7, 14, 30].includes(Number(source.cacheTtlDays)) ? Number(source.cacheTtlDays) : result.cacheTtlDays;
+  result.cachePath = readString(source.cachePath, result.cachePath);
+  result.checkUpdateOnStartup = readBoolean(source.checkUpdateOnStartup, result.checkUpdateOnStartup);
+  result.ignoredUpdateVersion = readString(source.ignoredUpdateVersion, result.ignoredUpdateVersion);
+  result.ignoreAllUpdates = readBoolean(source.ignoreAllUpdates, result.ignoreAllUpdates);
+  result.closeToTray = readBoolean(source.closeToTray, result.closeToTray);
+  result.autostart = readBoolean(source.autostart, result.autostart);
+  result.startMinimized = readBoolean(source.startMinimized, result.startMinimized);
+  result.alwaysOnTop = readBoolean(source.alwaysOnTop, result.alwaysOnTop);
+  result.rememberWindowState = readBoolean(source.rememberWindowState, result.rememberWindowState);
+  result.notifyReplies = readBoolean(source.notifyReplies, result.notifyReplies);
+  result.notifyAt = readBoolean(source.notifyAt, result.notifyAt);
+  result.notifyPm = readBoolean(source.notifyPm, result.notifyPm);
+  result.desktopNotifications = readBoolean(source.desktopNotifications, result.desktopNotifications);
+  result.androidBackgroundNotifications = readBoolean(source.androidBackgroundNotifications, result.androidBackgroundNotifications);
+  result.notificationSound = readBoolean(source.notificationSound, result.notificationSound);
+  result.notificationPollInterval = [1, 5, 10, 30].includes(Number(source.notificationPollInterval)) ? Number(source.notificationPollInterval) : result.notificationPollInterval;
+  result.blockedKeywords = Array.isArray(source.blockedKeywords) ? [...new Set(source.blockedKeywords.filter((item): item is string => typeof item === 'string' && item.trim().length > 0))] : result.blockedKeywords;
+  result.publishDeviceSignature = readBoolean(source.publishDeviceSignature, result.publishDeviceSignature);
+  result.deviceSignature = readString(source.deviceSignature, result.deviceSignature).slice(0, 40);
+  result.updateSpeedLimitKBps = [0, 500, 1024, 2048, 5120].includes(Number(source.updateSpeedLimitKBps)) ? Number(source.updateSpeedLimitKBps) : result.updateSpeedLimitKBps;
+  // 旧版下载代理升级为全局代理，已有全局地址始终优先。
+  result.networkProxyUrl = readString(source.networkProxyUrl, readString(source.proxyUrl, result.networkProxyUrl));
+  result.notifyDownloadComplete = readBoolean(source.notifyDownloadComplete, result.notifyDownloadComplete);
+  result.experimentalFeatures = readBoolean(source.experimentalFeatures, result.experimentalFeatures);
+  if (!result.experimentalFeatures && result.updateChannel === 'beta') result.updateChannel = 'stable';
+  if (isRecord(source.navVisibility)) {
+    for (const key of Object.keys(defaultNavVisibility) as Array<keyof NavVisibilitySettings>) result.navVisibility![key] = readBoolean(source.navVisibility[key], result.navVisibility![key]);
+  }
+  if (isRecord(source.deviceFingerprint)) {
+    const fingerprint = source.deviceFingerprint;
+    result.deviceFingerprint.customFingerprint = readBoolean(fingerprint.customFingerprint, result.deviceFingerprint.customFingerprint);
+    result.deviceFingerprint.deviceId = readString(fingerprint.deviceId, result.deviceFingerprint.deviceId).trim();
+    result.deviceFingerprint.ddid = readString(fingerprint.ddid, result.deviceFingerprint.ddid).trim();
+    result.deviceFingerprint.model = readString(fingerprint.model, result.deviceFingerprint.model);
+    result.deviceFingerprint.manufacturer = readString(fingerprint.manufacturer, '').trim();
+    result.deviceFingerprint.brand = readString(fingerprint.brand, '').trim();
+    result.deviceFingerprint.androidVersion = readString(fingerprint.androidVersion, result.deviceFingerprint.androidVersion);
+    result.deviceFingerprint.build = readString(fingerprint.build, result.deviceFingerprint.build);
+    result.deviceFingerprint.rom = readString(fingerprint.rom, '').trim();
+    result.deviceFingerprint.appVersion = readString(fingerprint.appVersion, result.deviceFingerprint.appVersion);
+    result.deviceFingerprint.appCode = readString(fingerprint.appCode, result.deviceFingerprint.appCode);
+    result.deviceFingerprint.sdkInt = readString(fingerprint.sdkInt, result.deviceFingerprint.sdkInt);
+    result.deviceFingerprint.locale = readString(fingerprint.locale, result.deviceFingerprint.locale);
+    if (isOneOf(fingerprint.darkMode, ['0', '1'])) result.deviceFingerprint.darkMode = fingerprint.darkMode;
+  }
+  if (result.deviceSignature === '酷安桌面版') result.deviceSignature = '';
+  return result;
+}
+
+type AccentPalette = {
+  primary: string;
+  hover: string;
+  active: string;
+  soft: string;
+  softHover: string;
+};
+
+const ACCENT_PALETTES: Record<AccentColor, { light: AccentPalette; dark: AccentPalette }> = {
+  green: {
+    light: { primary: '#10b768', hover: '#079e58', active: '#05844b', soft: '#eaf8f0', softHover: '#ddf4e7' },
+    dark: { primary: '#22c875', hover: '#32d984', active: '#16af65', soft: '#173a29', softHover: '#1d4933' },
+  },
+  blue: {
+    light: { primary: '#2f7bff', hover: '#1f6bf0', active: '#1a5bd0', soft: '#eaf1ff', softHover: '#dce9ff' },
+    dark: { primary: '#5b9dff', hover: '#6faaff', active: '#4a8bf0', soft: '#16263f', softHover: '#1d3152' },
+  },
+  violet: {
+    light: { primary: '#7c5cff', hover: '#6c4cf0', active: '#5b3dd8', soft: '#f1ecff', softHover: '#e6dcff' },
+    dark: { primary: '#a78bff', hover: '#b59cff', active: '#9676f0', soft: '#241a3d', softHover: '#2e2250' },
+  },
+  orange: {
+    light: { primary: '#f58220', hover: '#e0720f', active: '#c9640c', soft: '#fff2e6', softHover: '#ffe8d1' },
+    dark: { primary: '#ffa145', hover: '#ffb066', active: '#f08d30', soft: '#3d2a17', softHover: '#4f371e' },
+  },
+};
+
+export const useSettingsStore = defineStore('settings', () => {
+  const settings = ref<AppSettings>(cloneDefaultSettings());
+  const resolvedTheme = ref<'dark' | 'light'>('light');
+  const linuxSystemTheme = ref<SystemTheme>(null);
+  const androidProfileBackground = ref(false);
+  const androidSystemBarDimOwners = new Set<symbol>();
+  const profileToolbarCompact = ref(false);
+  const isTauriRuntime = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+  let fileStore: SettingsFileStore | null = null;
+  let persistenceReady = !isTauriRuntime;
+  let nativeSyncReady = false;
+  let saveQueue = Promise.resolve();
+  let initializationPromise: Promise<void> | null = null;
+
+  function loadLegacySettings(): AppSettings {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return cloneDefaultSettings();
+      const parsed = JSON.parse(saved);
+      const normalized = normalizeSettings(parsed);
+      if (!normalized.zoomManuallySet) normalized.zoom = getSystemZoom();
+      return normalized;
+    } catch (err) {
+      console.error('加载旧版设置失败，将使用默认设置', err);
+      return cloneDefaultSettings();
+    }
+  }
+
+  async function saveSettingsFile(snapshot: AppSettings) {
+    if (!fileStore) return;
+    const currentKeys = new Set(Object.keys(snapshot));
+    const oldKeys = await fileStore.keys();
+    for (const key of oldKeys) {
+      if (!currentKeys.has(key)) await fileStore.delete(key);
+    }
+    for (const [key, value] of Object.entries(snapshot)) await fileStore.set(key, value);
+    await fileStore.save();
+  }
+
+  function queueFileSave(snapshot: AppSettings) {
+    const copy = JSON.parse(JSON.stringify(snapshot)) as AppSettings;
+    saveQueue = saveQueue.then(() => saveSettingsFile(copy)).catch((err) => {
+      console.error('保存 settings.json 失败', err);
+    });
+    return saveQueue;
+  }
+
+  async function initialize() {
+    if (!isTauriRuntime) return;
+    try {
+      const { Store } = await import('@tauri-apps/plugin-store');
+      const store = await Store.load(SETTINGS_FILE, { autoSave: false });
+      const entries = await store.entries<unknown>();
+      const diskSettings = Object.fromEntries(entries);
+      settings.value = normalizeSettings(entries.length ? diskSettings : loadLegacySettings());
+      if (!settings.value.zoomManuallySet) settings.value.zoom = getSystemZoom();
+      fileStore = store;
+      persistenceReady = true;
+      nativeSyncReady = true;
+      await syncNativeSettings(settings.value);
+      await queueFileSave(settings.value);
+    } catch (err) {
+      console.error('加载 settings.json 失败，将回退到 localStorage', err);
+      settings.value = loadLegacySettings();
+      if (!settings.value.zoomManuallySet) settings.value.zoom = getSystemZoom();
+      persistenceReady = true;
+      nativeSyncReady = true;
+      await syncNativeSettings(settings.value);
+    }
+  }
+
+  if (!isTauriRuntime) settings.value = loadLegacySettings();
+
+  function initializeSettings() {
+    if (!initializationPromise) initializationPromise = initialize();
+    return initializationPromise;
+  }
+
+  function flushSettings() {
+    return saveQueue;
+  }
+
+  // 持久化只负责写盘。视觉和原生副作用使用字段级 watcher，避免修改任意
+  // 一个设置时重复调用所有系统 API。
+  watch(
+    settings,
+    (newVal) => {
+      if (persistenceReady) {
+        if (fileStore) {
+          void queueFileSave(newVal);
+        } else {
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(newVal));
+          } catch (err) {
+            console.error('保存本地设置失败', err);
+          }
+        }
+      }
+    },
+    { deep: true }
+  );
+
+  watch(() => settings.value.theme, (theme) => {
+    applyTheme(theme);
+    applyAccent(settings.value.accentColor);
+  }, { immediate: true });
+  watch(() => settings.value.accentColor, applyAccent, { immediate: true });
+  // 使用根节点标记统一控制独立页面和缓存页面，开关变化立即生效。
+  // 玻璃质感是唯一入口：同时驱动导航宿主（data-glass-chrome）与首页/话题顶栏（data-header-glass）。
+  watch(() => settings.value.glassChrome, (level: GlassChromeLevel) => {
+    document.documentElement.setAttribute('data-glass-chrome', level);
+    document.documentElement.setAttribute('data-header-glass', level === 'off' ? 'off' : 'on');
+  }, { immediate: true });
+  watch(() => settings.value.jellyNav, enabled => document.documentElement.setAttribute('data-nav-jelly', enabled ? 'on' : 'off'), { immediate: true });
+  watch(() => settings.value.lightBackgroundColor, color => {
+    const root = document.documentElement;
+    const palette = buildLightBackground(color);
+    if (palette) {
+      root.setAttribute('data-light-background', 'custom');
+      for (const [key, value] of Object.entries(palette)) root.style.setProperty(`--light-custom-${key}`, value);
+    } else {
+      root.removeAttribute('data-light-background');
+      for (const key of ['page', 'secondary', 'surface', 'hover', 'active', 'border', 'divider']) root.style.removeProperty(`--light-custom-${key}`);
+    }
+  }, { immediate: true });
+  watch(() => settings.value.density, applyDensity, { immediate: true });
+  watch(() => settings.value.fontFamily, applyFontFamily, { immediate: true });
+  watch(() => settings.value.fontSize, applyFontSize, { immediate: true });
+  watch(() => settings.value.zoom, applyZoom, { immediate: true });
+  watch(() => settings.value.reduceMotion, applyReduceMotion, { immediate: true });
+  watch(() => settings.value.noImageMode, applyNoImageMode, { immediate: true });
+
+  watch(() => settings.value.closeToTray, (enabled) => {
+    if (nativeSyncReady) syncCloseToTray(enabled);
+  }, { flush: 'sync' });
+  watch(() => settings.value.alwaysOnTop, (enabled) => {
+    if (nativeSyncReady) syncAlwaysOnTop(enabled);
+  }, { flush: 'sync' });
+  watch(
+    () => [settings.value.startMinimized, settings.value.rememberWindowState, settings.value.alwaysOnTop] as const,
+    () => {
+      if (nativeSyncReady) syncStartupFlags(settings.value);
+    },
+    { flush: 'sync' },
+  );
+  watch(() => settings.value.deviceFingerprint, () => {
+    if (nativeSyncReady) syncDeviceProfile(settings.value);
+  }, { deep: true, flush: 'sync' });
+  watch(() => settings.value.experimentalFeatures, (enabled) => {
+    if (!enabled && settings.value.updateChannel === 'beta') settings.value.updateChannel = 'stable';
+  }, { flush: 'sync' });
+  // 动态磁贴开关变更后立即同步给后端：开启时立即刷新磁贴，关闭时清空磁贴队列。
+  watch(() => settings.value.liveTileEnabled, (enabled) => {
+    if (!nativeSyncReady) return;
+    invoke('set_live_tile_enabled', {
+      enabled,
+      source: settings.value.liveTileSource,
+    }).catch((err) => {
+      console.warn('[settings] 同步动态磁贴开关失败', err);
+    });
+  }, { flush: 'sync' });
+  // 磁贴数据源变更后立即刷新，不必等下一个定时周期。
+  // 直接把新值传给后端：持久化链路较慢（异步写盘），后端此刻读缓存拿到的
+  // 仍是旧值，磁贴会与界面不一致。
+  watch(() => settings.value.liveTileSource, (source) => {
+    if (!nativeSyncReady || !settings.value.liveTileEnabled) return;
+    invoke('update_desktop_tile', { source }).catch((err) => {
+      console.warn('[settings] 触发磁贴刷新失败', err);
+    });
+  }, { flush: 'sync' });
+
+  void initializeSettings();
+
+  // 我的页面使用独立背景，滚动后的顶栏恢复普通表面色。
+  function setAndroidProfileBackground(enabled: boolean) { androidProfileBackground.value = enabled; syncAndroidSystemBarTheme(); }
+
+  function setAndroidSystemBarDimmed(owner: symbol, dimmed: boolean) {
+    const wasDimmed = androidSystemBarDimOwners.size > 0;
+    if (dimmed) androidSystemBarDimOwners.add(owner);
+    else androidSystemBarDimOwners.delete(owner);
+    if (wasDimmed !== (androidSystemBarDimOwners.size > 0)) syncAndroidSystemBarTheme();
+  }
+
+  function syncAndroidSystemBarTheme() {
+    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
+    if (typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent)) {
+      // Android 状态栏后方由网页绘制；原生同步状态栏文字明暗及底部安全区的主题与遮罩。
+      void invoke('set_android_system_bar_theme', { dark: document.documentElement.getAttribute('data-theme') === 'dark', profile: androidProfileBackground.value, dimmed: androidSystemBarDimOwners.size > 0 }).catch((err) => console.warn('同步 Android 状态栏主题失败:', err));
+    }
+  }
+
+  function syncWindowTheme(theme: 'light' | 'dark' | null) {
+    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
+    syncAndroidSystemBarTheme();
+    if ((window as any).__TAURI_INTERNALS__?.metadata) {
+      void getCurrentWindow().setTheme(theme).catch((err) => {
+        console.warn('通过 Tauri Window API 设置窗口主题失败:', err);
+      });
+    }
+    invoke('set_window_theme', { theme }).catch((err) => {
+      console.warn('通过 set_window_theme 设置窗口主题失败:', err);
+    });
+  }
+
+  function applyTheme(theme: ThemeMode) {
+    const root = document.documentElement;
+    let windowTheme: 'light' | 'dark' | null = null;
+    if (theme === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+      windowTheme = 'dark';
+    } else if (theme === 'light') {
+      root.removeAttribute('data-theme');
+      windowTheme = 'light';
+    } else {
+      // Follow system
+      const prefersDark = linuxSystemTheme.value !== null ? linuxSystemTheme.value === 'dark'
+        : typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+        : false;
+      if (prefersDark) {
+        root.setAttribute('data-theme', 'dark');
+      } else {
+        root.removeAttribute('data-theme');
+      }
+      // Linux setTheme(null) 可能把 GTK 重置为浅色，让原生窗口与最终页面主题一致。
+      windowTheme = isLinuxDesktopRuntime() ? (prefersDark ? 'dark' : 'light') : null;
+    }
+    resolvedTheme.value = root.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    syncWindowTheme(windowTheme);
+  }
+
+  const systemThemeMedia = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null;
+  const onSystemThemeChange = () => {
+    if (settings.value.theme !== 'system') return;
+    applyTheme('system');
+    applyAccent(settings.value.accentColor);
+  };
+  const stopSystemTheme = systemThemeMedia ? listenMediaQuery(systemThemeMedia, onSystemThemeChange) : undefined;
+  onScopeDispose(() => stopSystemTheme?.());
+  if (isLinuxDesktopRuntime()) {
+    const stop = observeLinuxSystemTheme(theme => {
+      linuxSystemTheme.value = theme;
+      if (settings.value.theme !== 'system') return;
+      applyTheme('system');
+      applyAccent(settings.value.accentColor);
+    });
+    onScopeDispose(stop);
+  }
+
+  function applyAccent(color: AccentColor) {
+    const palette = ACCENT_PALETTES[color] || ACCENT_PALETTES.green;
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const p = isDark ? palette.dark : palette.light;
+    const root = document.documentElement;
+    const vars: Record<string, string> = {
+      '--brand-primary': p.primary,
+      '--brand-hover': p.hover,
+      '--brand-active': p.active,
+      '--brand-soft': p.soft,
+      '--brand-soft-hover': p.softHover,
+      '--brand-green': p.primary,
+      '--brand-green-hover': p.hover,
+      '--brand-green-light': p.soft,
+      '--brand-green-subtle': p.soft,
+      '--brand-green-border': p.primary,
+      '--success': p.primary,
+      '--color-success': p.primary,
+      '--border-focus': `${p.primary}80`,
+    };
+    for (const key of Object.keys(vars)) {
+      root.style.setProperty(key, vars[key]);
+    }
+  }
+
+  function applyDensity(density: FeedDensity) {
+    document.documentElement.setAttribute('data-density', density);
+  }
+
+  function applyReduceMotion(enabled: boolean) {
+    document.documentElement.setAttribute('data-reduce-motion', String(enabled));
+  }
+
+  function applyNoImageMode(enabled: boolean) {
+    const root = document.documentElement;
+    if (enabled) root.setAttribute('data-no-image-mode', 'true');
+    else root.removeAttribute('data-no-image-mode');
+  }
+
+  function applyFontSize(size: number) {
+    const safe = Math.min(Math.max(size || 15, 12), 20);
+    document.documentElement.style.setProperty('--font-size-body', `${safe}px`);
+  }
+
+  function applyFontFamily(fontFamily: FontFamily) {
+    const root = document.documentElement;
+    const selected = normalizeFontFamily(fontFamily);
+    if (!selected) {
+      root.style.removeProperty('--font-family-base');
+      return;
+    }
+
+    const escaped = selected.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    root.style.setProperty('--font-family-base', `"${escaped}", var(--font-family-system)`);
+  }
+
+  function applyZoom(zoom: number) {
+    const safeZoom = clampZoom(zoom);
+    const factor = safeZoom / 100;
+    const appEl = document.getElementById('app');
+    if (!appEl) return;
+
+    // 彻底清除旧的 CSS zoom（有 vw/vh 计算 Bug）
+    (appEl.style as any).zoom = '';
+    document.body.style.zoom = '';
+
+    // 使用 transform: scale() 实现缩放，配合反算宽高确保精准充盈视口
+    appEl.style.transformOrigin = 'top left';
+    appEl.style.transform = `scale(${factor})`;
+    appEl.style.width = `${100 / factor}vw`;
+    appEl.style.height = `${100 / factor}vh`;
+  }
+
+  function applyAppearance() {
+    applyTheme(settings.value.theme);
+    applyAccent(settings.value.accentColor);
+    applyDensity(settings.value.density);
+    applyFontFamily(settings.value.fontFamily);
+    applyFontSize(settings.value.fontSize);
+    applyZoom(settings.value.zoom);
+    applyReduceMotion(settings.value.reduceMotion);
+    applyNoImageMode(settings.value.noImageMode);
+  }
+
+  function syncCloseToTray(enabled: boolean) {
+    invoke('set_close_to_tray', { enabled }).catch((err) => {
+      console.warn('同步关闭到托盘设置失败:', err);
+    });
+  }
+
+  function syncAlwaysOnTop(enabled: boolean) {
+    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
+    // Android/iOS 不提供桌面窗口置顶接口，初始化与设置同步都应跳过。
+    if (isTouchMobilePlatform()) return;
+    if ((window as any).__TAURI_INTERNALS__?.metadata) {
+      void getCurrentWindow().setAlwaysOnTop(enabled).catch((err) => {
+        console.warn('设置窗口置顶失败:', err);
+      });
+    }
+  }
+
+  function syncStartupFlags(s: AppSettings) {
+    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
+    invoke('set_startup_flags', {
+      startMinimized: s.startMinimized,
+      rememberWindowState: s.rememberWindowState,
+      alwaysOnTop: s.alwaysOnTop,
+    }).catch((err) => {
+      console.warn('同步启动参数失败:', err);
+    });
+  }
+
+  // 将用户保存的设备 ID 同步给 Rust 客户端，用于更新请求设备码。
+  async function syncDeviceProfile(s: AppSettings): Promise<boolean> {
+    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return true;
+    const f = s.deviceFingerprint;
+    const deviceId = f.deviceId?.trim() || undefined;
+    try {
+      await invoke('update_device_profile', {
+        profile: {
+          ...(f.customFingerprint
+            ? {
+                userAgent: buildDeviceUserAgent(f),
+                sdkInt: f.sdkInt,
+                locale: f.locale,
+                appVersion: f.appVersion,
+                appCode: f.appCode,
+                apiVersion: '16',
+                darkMode: f.darkMode,
+                model: f.model.trim() || undefined,
+                build: f.build.trim() || undefined,
+                ...resolveDeviceIdentity(f),
+              }
+            : {}),
+          deviceId,
+        },
+      });
+      return true;
+    } catch (err) {
+      console.warn('同步设备信息设置失败:', err);
+      return false;
+    }
+  }
+
+  async function syncNativeSettings(s: AppSettings) {
+    syncCloseToTray(s.closeToTray);
+    syncAlwaysOnTop(s.alwaysOnTop);
+    syncStartupFlags(s);
+    syncDeviceProfile(s);
+    await syncNetworkProxy(s.networkProxyUrl);
+  }
+
+  async function syncNetworkProxy(proxyUrl: string): Promise<boolean> {
+    if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return true;
+    try { await invoke('set_network_proxy', { proxyUrl: proxyUrl.trim() || null }); return true; }
+    catch (err) { console.warn('同步网络代理设置失败:', err); return false; }
+  }
+
+  async function setNetworkProxyUrl(proxyUrl: string): Promise<boolean> {
+    if (!await syncNetworkProxy(proxyUrl)) return false;
+    settings.value.networkProxyUrl = proxyUrl.trim();
+    return true;
+  }
+
+  async function setAutostart(enabled: boolean): Promise<boolean> {
+    if (!isTauriRuntime) {
+      settings.value.autostart = enabled;
+      return true;
+    }
+    try {
+      const plugin = await import('@tauri-apps/plugin-autostart');
+      if (enabled) await plugin.enable();
+      else await plugin.disable();
+      settings.value.autostart = enabled;
+      return true;
+    } catch (err) {
+      console.warn('同步开机自启动设置失败:', err);
+      return false;
+    }
+  }
+
+  function setTheme(mode: ThemeMode) {
+    settings.value.theme = mode;
+  }
+
+  function toggleSidebar() {
+    settings.value.sidebarCollapsed = !settings.value.sidebarCollapsed;
+  }
+
+  function toggleMoreExpanded() {
+    settings.value.moreExpanded = !settings.value.moreExpanded;
+  }
+
+  function setZoom(zoom: number) {
+    settings.value.zoom = clampZoom(zoom);
+    settings.value.zoomManuallySet = true;
+  }
+
+  function refreshAutoZoom() {
+    if (settings.value.zoomManuallySet) return;
+    const systemZoom = getSystemZoom();
+    if (settings.value.zoom !== systemZoom) {
+      settings.value.zoom = systemZoom;
+    }
+  }
+
+  function setAccent(color: AccentColor) {
+    settings.value.accentColor = color;
+  }
+
+  function toggleNavVisibility(key: keyof NavVisibilitySettings) {
+    if (!settings.value.navVisibility) {
+      settings.value.navVisibility = { ...defaultNavVisibility };
+    }
+    settings.value.navVisibility[key] = !settings.value.navVisibility[key];
+  }
+
+  function ignoreUpdateVersion(version: string) {
+    settings.value.ignoredUpdateVersion = version;
+  }
+
+  function setIgnoreAllUpdates(enabled: boolean) {
+    settings.value.ignoreAllUpdates = enabled;
+  }
+
+  function resetUpdateNotifications() {
+    settings.value.ignoredUpdateVersion = '';
+    settings.value.ignoreAllUpdates = false;
+  }
+
+  return {
+    settings,
+    resolvedTheme,
+    profileToolbarCompact,
+    setAndroidProfileBackground,
+    setAndroidSystemBarDimmed,
+    initializeSettings,
+    flushSettings,
+    syncDeviceProfile,
+    setNetworkProxyUrl,
+    applyAppearance,
+    setAutostart,
+    setTheme,
+    toggleSidebar,
+    toggleMoreExpanded,
+    setZoom,
+    refreshAutoZoom,
+    setAccent,
+    toggleNavVisibility,
+    ignoreUpdateVersion,
+    setIgnoreAllUpdates,
+    resetUpdateNotifications,
+  };
+});

@@ -1,0 +1,63 @@
+@import './tokens.css';
+@import './themes.css';
+@import './reset.css';
+@import './utilities.css';
+@import './touch.css';
+@import './pullRefresh.css';
+@import './transitions.css';
+@import './glass.css';
+
+/* 液态玻璃默认关闭；覆盖各导航宿主及延伸表面，避免某一段仍在模糊或透出正文。 */
+:root[data-header-glass="off"] .app-shell.has-home-navigation .mobile-reading-topbar,
+:root[data-header-glass="off"] .app-shell.has-topic-navigation :is(.mobile-reading-topbar, .mobile-reading-topbar-content),
+:root[data-header-glass="off"] :is(.single-column-top-nav, .topic-sticky-controls, .topic-sticky-controls .is-glass .filter-type-menu),
+:root[data-header-glass="off"] .topic-sticky-controls::before {
+  background: var(--surface) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* 列表密度 (Feed Density) —— 由设置 store 的 data-density 驱动 */
+:root {
+  --feed-card-padding: 20px;
+  --feed-card-gap: 12px;
+}
+
+:root[data-density='comfortable'] {
+  --feed-card-padding: 24px;
+  --feed-card-gap: 16px;
+}
+
+:root[data-density='compact'] {
+  --feed-card-padding: 14px;
+  --feed-card-gap: 8px;
+}
+
+/* 减少动态过渡效果：由设置 store 的 data-reduce-motion 驱动 */
+:root[data-reduce-motion='true'] *,
+:root[data-reduce-motion='true'] *::before,
+:root[data-reduce-motion='true'] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}
+
+/* 无图模式下仍隐藏视频；图片只允许详情及其大图浮层按独立设置放行。 */
+:root[data-no-image-mode='true'] video,
+:root[data-no-image-mode='true'] .feed-video-card,
+:root[data-no-image-mode='true'] .live-player-shell {
+  display: none !important;
+}
+
+:root[data-no-image-mode='true'] :is(
+  img, .app-image-container, .feed-image-grid, .image-grid, .live-photo-preview,
+  .app-avatar-container, .image-viewer-backdrop, .publish-media-preview, .forward-media-preview,
+  .comment-media-preview, .emoji-panel, .emoji-picker-popover,
+  [class*='fallback']:not(.goods-price-fallback), .image-placeholder, .image-error,
+  .collection-cover-placeholder, .banner-cover-placeholder, .cover-placeholder, .cover-gradient,
+  .banner-cover-gradient, .card-cover-backdrop, .question-related-placeholder,
+  .answer-related-placeholder, .live-player-placeholder, .placeholder-avatar, .discovery-generic-icon
+):not(.no-image-detail-enabled, .no-image-detail-enabled *) {
+  display: none !important;
+}
