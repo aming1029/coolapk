@@ -6,67 +6,31 @@
       'is-mobile-login-state': isNotLoggedIn,
     }"
   >
-    <!-- 左侧会话列表 -->
-    <div class="messages-sidebar" :style="{ width: `${sidebarWidth}px` }">
-      <div class="sidebar-header">
-        <h2>私信</h2>
-      </div>
-      
-      <div class="session-list" v-if="sessions.length" @scroll="handleSessionScroll">
-        <div 
-          v-for="session in sessions" 
-          :key="session.ukey || session.id" 
-          class="session-item"
-          data-context-kind="message"
-          :data-context-message-ukey="String(session.ukey || (session.isNewConversation ? '' : session.id) || '')"
-          :data-context-message-id="String(session.id || '')"
-          :data-context-message-new="session.isNewConversation ? 'true' : 'false'"
-          :class="{ active: isSameSession(currentSession, session), unread: isSessionUnread(session) }"
-          @click="selectSession(session)"
-        >
-          <AppAvatar :src="getSessionPartnerAvatar(session)" size="md" />
-          <div class="session-info">
-            <div class="session-header">
-              <span class="username">{{ getUsername(session) }}</span>
-              <span class="time">{{ formatTime(getDateline(session)) }}</span>
-            </div>
-            <div class="last-message" v-html="renderSessionLastMessage(session)"></div>
-          </div>
-          <span v-if="getSessionUnreadCount(session) > 0" class="session-unread-badge" aria-label="未读消息数">{{ getSessionUnreadLabel(session) }}</span>
-        </div>
-        <div v-if="loadingMoreSessions" class="session-pagination-status">加载更多会话...</div>
-        <button v-else-if="sessionsMoreError" class="session-pagination-action" type="button" @click="loadMoreSessions">
-          加载失败，点击重试
-        </button>
-        <button v-else-if="hasMoreSessions" class="session-pagination-action" type="button" @click="loadMoreSessions">
-          加载更多会话
-        </button>
-      </div>
-      
-      <div class="session-list-status" v-else-if="isNotLoggedIn">
-        <EmptyState title="暂无会话" description="登录后同步私信列表" icon="far fa-user" />
-      </div>
-
-      <div class="session-list-status" v-else-if="loadingSessions">
-        <LoadingState text="加载中..." />
-      </div>
-
-      <div class="session-list-status" v-else-if="displaySessionsError">
-        <ErrorState title="私信加载失败" :message="displaySessionsError" @retry="loadSessions" />
-      </div>
-      
-      <div class="session-list-status" v-else>
-        <EmptyState title="暂无私信" description="去寻找有趣的酷友聊聊吧" />
-      </div>
-    </div>
-
-    <!-- 左侧会话栏宽度调节手柄 -->
-    <div 
-      class="sidebar-resizer" 
-      title="左右拖拽调整会话列表宽度，双击恢复默认" 
-      @mousedown="startResizeSidebar" 
-      @dblclick="resetSidebarWidth"
-    ></div>
+    <MessageSessionList
+      :sessions="sessions"
+      :current-session="currentSession"
+      :loading="loadingSessions"
+      :loading-more="loadingMoreSessions"
+      :has-more="hasMoreSessions"
+      :more-error="sessionsMoreError"
+      :is-not-logged-in="isNotLoggedIn"
+      :display-error="displaySessionsError"
+      :sidebar-width="sidebarWidth"
+      :is-same-session="isSameSession"
+      :is-session-unread="isSessionUnread"
+      :get-partner-avatar="getSessionPartnerAvatar"
+      :get-username="getUsername"
+      :format-time="(session) => formatTime(getDateline(session))"
+      :render-last-message="renderSessionLastMessage"
+      :get-unread-count="getSessionUnreadCount"
+      :get-unread-label="getSessionUnreadLabel"
+      @select="selectSession"
+      @scroll="handleSessionScroll"
+      @load-more="loadMoreSessions"
+      @retry="loadSessions"
+      @resize-start="startResizeSidebar"
+      @reset-width="resetSidebarWidth"
+    />
 
     <!-- 右侧聊天区域 -->
     <div class="messages-main" v-if="currentSession">
@@ -90,193 +54,63 @@
         </div>
       </div>
       
-      <div 
-        class="chat-area" 
-        :class="{ 'is-ready': isChatPositionReady }" 
-        ref="chatAreaRef" 
+      <MessageThread
+        ref="messageThreadRef"
+        :current-session="currentSession"
+        :current-user-uid="currentUserUid"
+        :current-user-avatar="authStore.user?.userAvatar"
+        :messages="renderableChatHistory"
+        :follow-tip="followTipEntity"
+        :follow-notice-text="followTipEntity ? getSystemNoticeText(followTipEntity) : ''"
+        :loading="loadingHistory"
+        :error="historyError"
+        :loading-more="loadingMoreHistory"
+        :load-more-error="historyLoadMoreError"
+        :following="followingPartner"
+        :confirming-follow="confirmingFollow"
+        :ready="isChatPositionReady"
+        :get-entity-type="getEntityType"
+        :is-warning-notice="isWarningNotice"
+        :get-system-notice-text="getSystemNoticeText"
+        :is-self="isSelf"
+        :get-partner-avatar="getSessionPartnerAvatar"
+        :get-partner-uid="getSessionPartnerUid"
+        :get-pic-url="getPicUrl"
+        :get-message-text="getMessageText"
+        :render-message-content="renderMessageContent"
+        :format-time="formatMessageTime"
+        :get-dateline="getDateline"
+        :get-diagnostic-link="getDiagnosticLink"
         @scroll="handleChatScroll"
-      >
-        <div class="chat-status" v-if="loadingHistory">
-          <LoadingState text="加载聊天记录..." />
-        </div>
-
-        <div class="chat-status" v-else-if="historyError && !chatHistory.length">
-          <ErrorState title="聊天记录加载失败" :message="historyError" @retry="retryCurrentSession" />
-        </div>
-        
-        <template v-else>
-          <!-- APK 将 messageExtra/float 作为当前会话顶部的独立关注提示，不放进历史消息列表。 -->
-          <div v-if="followTipEntity" class="system-notice-item message-follow-tip-item">
-            <div class="system-notice-badge">
-              <span>{{ getSystemNoticeText(followTipEntity) }}</span>
-              <button class="follow-action-btn" type="button" @click="handleFollowPartner" :disabled="followingPartner || confirmingFollow">
-                <i class="fas fa-user-plus"></i> {{ followingPartner ? '关注中...' : (confirmingFollow ? '确认中...' : '关注对方') }}
-              </button>
-            </div>
-          </div>
-
-          <div v-if="loadingMoreHistory" class="chat-pagination-status">加载更早消息...</div>
-          <button v-else-if="historyLoadMoreError" class="chat-pagination-error" type="button" @click="retryLoadMoreHistory">
-            {{ historyLoadMoreError }}，点击重试
-          </button>
-          <template v-for="(msg, index) in renderableChatHistory" :key="msg.id || msg.dateline || index">
-            <!-- 酷安官方系统提醒 / 时间分隔项 (entityType === 'messageExtra') -->
-            <div v-if="getEntityType(msg) === 'messageExtra'" class="system-notice-item">
-              <div :class="['system-notice-badge', { 'is-warning': isWarningNotice(msg) }]">
-                <i v-if="isWarningNotice(msg)" class="fas fa-shield-halved warning-icon"></i>
-                <span>{{ getSystemNoticeText(msg) }}</span>
-              </div>
-            </div>
-
-            <!-- 普通用户对话气泡消息 -->
-            <div
-              v-else
-              class="message-item"
-              :class="{ 'is-self': isSelf(msg) }"
-            >
-              <AppAvatar 
-                v-if="!isSelf(msg)" 
-                :src="getSessionPartnerAvatar(currentSession)" 
-                size="sm" 
-                class="msg-avatar clickable-avatar" 
-                title="查看个人主页"
-                @click="navigateToUser(getSessionPartnerUid(currentSession))"
-              />
-              <div class="message-content">
-                <!-- 纯图片消息 -->
-                <div v-if="getPicUrl(msg) && !getMessageText(msg)" class="msg-pic-only-card" @click.stop="openMessageImage(msg)">
-                  <AppImage :src="getPicUrl(msg)" fit="contain" image-class="msg-pure-img" />
-                </div>
-                <!-- 包含文本或文本+图片混合消息 -->
-                <div
-                  v-else
-                  class="bubble-wrapper"
-                  data-context-kind="chat-message"
-                  :data-context-message-text="getMessageText(msg)"
-                  :data-context-message-id="String(msg.id || '')"
-                >
-                  <div class="bubble">
-                    <div v-if="getPicUrl(msg)" class="msg-pic-container" @click.stop="openMessageImage(msg)">
-                      <AppImage :src="getPicUrl(msg)" fit="contain" image-class="msg-img" />
-                    </div>
-                    <div v-if="getMessageText(msg)" class="msg-text" v-html="renderMessageContent(msg)" @click="handleAnchorClick"></div>
-                  </div>
-                </div>
-                <div class="msg-time">{{ formatMessageTime(getDateline(msg)) }}</div>
-                <button v-if="getDiagnosticLink(getMessageText(msg))" type="button" class="diagnostic-report-action"
-                  @click="router.push({ path: '/settings/diagnostics', query: { report: getDiagnosticLink(getMessageText(msg)) } })">
-                  <i class="fas fa-file-lines"></i> 查看诊断日志
-                </button>
-              </div>
-              <AppAvatar 
-                v-if="isSelf(msg)" 
-                :src="authStore.user?.userAvatar" 
-                size="sm" 
-                class="msg-avatar clickable-avatar" 
-                title="查看个人主页"
-                @click="navigateToUser(currentUserUid)"
-              />
-            </div>
-          </template>
-        </template>
-      </div>
+        @retry="retryCurrentSession"
+        @follow="handleFollowPartner"
+        @retry-load-more="retryLoadMoreHistory"
+        @open-user="navigateToUser"
+        @open-image="openMessageImage"
+        @open-diagnostic="(link) => router.push({ path: '/settings/diagnostics', query: { report: link } })"
+      />
       
-      <div 
-        :class="['input-area', { 'is-fullscreen': isInputFullscreen, 'has-pending-images': pendingImages.length > 0 }]"
-        :style="isInputFullscreen ? {} : { height: `${visibleInputHeight}px` }"
-      >
-        <!-- 顶部拖拽调整高度分割线 -->
-        <div 
-          v-if="!isInputFullscreen"
-          class="input-resizer" 
-          title="上下拖拽调整输入框高度，双击恢复默认" 
-          @pointerdown="startResizeInput"
-          @dblclick="resetInputHeight"
-        >
-          <div class="resizer-handle-bar"></div>
-        </div>
-
-        <!-- 底部功能工具栏 (酷安表情贴图选择、发图、全屏编辑切换) -->
-        <div class="input-toolbar">
-          <div class="toolbar-left">
-            <div class="emoji-picker-container" ref="emojiContainerRef">
-              <button 
-                :class="['toolbar-btn', { 'is-active': showEmojiPicker }]" 
-                title="表情" 
-                @click.stop="toggleEmojiPicker"
-              >
-                <i class="far fa-face-smile"></i>
-              </button>
-
-              <!-- 酷安 Emoji 表情包浮动面板 (参考微信：无顶部条，最近使用 + 所有表情) -->
-              <div v-if="showEmojiPicker" class="emoji-picker-popover custom-scrollbar" @click.stop>
-                <EmojiPanel :key="String(currentSession?.ukey || currentSession?.id || '')" :disabled="sending || sendingImage" :selected-urls="pendingImages.flatMap(image => image.url ? [image.url] : [])" @select="insertEmoji" @picture="selectFavoritePicture" />
-              </div>
-            </div>
-
-            <button class="toolbar-btn" title="发图" @click="triggerImageSelect" :disabled="sendingImage">
-              <i class="far fa-image"></i>
-            </button>
-            <input type="file" ref="fileInputRef" accept="image/*" style="display: none;" @change="handleImageSelected" />
-          </div>
-
-          <div class="toolbar-right">
-            <button 
-              class="toolbar-btn fullscreen-btn" 
-              :class="{ 'is-active': isInputFullscreen }"
-              :title="isInputFullscreen ? (showShortcutHints ? '退出全屏编辑 (Esc)' : '退出全屏编辑') : '全屏展开编辑'"
-              @click="toggleInputFullscreen"
-            >
-              <i :class="isInputFullscreen ? 'fas fa-compress-alt' : 'fas fa-expand-alt'"></i>
-              <span class="fullscreen-tip-text">{{ isInputFullscreen ? '退出全屏' : '全屏' }}</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 待发送图片预览区 -->
-        <div v-if="pendingImages.length > 0" class="pending-images-bar">
-          <div v-for="(img, idx) in pendingImages" :key="img.id" class="pending-image-card">
-            <AppImage v-if="img.url" :src="img.previewUrl" class="pending-image-thumb" alt="待发送图片" fit="cover" />
-            <img v-else :src="img.previewUrl" class="pending-image-thumb" alt="待发送图片" />
-            <button
-              type="button"
-              class="pending-image-remove-btn"
-              title="移除图片"
-              :disabled="sending || sendingImage"
-              @click.stop="removePendingImage(idx)"
-            >
-              <i class="fas fa-times"></i>
-            </button>
-          </div>
-        </div>
-
-        <div
-          ref="editorRef"
-          class="message-rich-editor"
-          contenteditable="true"
-          :data-placeholder="isInputFullscreen ? (showShortcutHints ? '在此全屏编辑消息内容，支持快捷粘贴或输入长篇文本（按 Esc 退出全屏）...' : '在此全屏编辑消息内容...') : '发消息... (支持直接粘贴图片)'"
-          @input="handleEditorInput"
-          @keydown="handleKeydown"
-          @paste="handlePaste"
-          @drop="handleDrop"
-          @dragover.prevent
-        ></div>
-        
-        <div class="input-bottom-bar">
-          <div v-if="draftSaved" class="draft-status"><i class="far fa-save"></i> 草稿已自动保存</div>
-          <div v-else class="draft-status-placeholder"></div>
-
-          <div class="input-actions">
-            <AppButton 
-              variant="primary" 
-              size="sm"
-              @click="sendMessage"
-              :disabled="(!inputText.trim() && pendingImages.length === 0) || sending || sendingImage"
-              :loading="sending || sendingImage"
-            >发送</AppButton>
-          </div>
-        </div>
-      </div>
+      <MessageComposer
+        ref="composerRef"
+        v-model="inputText"
+        :pending-images="pendingImages"
+        :sending="sending"
+        :sending-image="sendingImage"
+        :draft-saved="draftSaved"
+        :input-height="visibleInputHeight"
+        :is-fullscreen="isInputFullscreen"
+        :show-shortcut-hints="showShortcutHints"
+        :session-key="String(currentSession?.ukey || currentSession?.id || '')"
+        @add-files="appendPendingImages"
+        @send-file="sendImageFile"
+        @remove-image="removePendingImage"
+        @favorite-picture="selectFavoritePicture"
+        @send="sendMessage"
+        @resize-start="startResizeInput"
+        @reset-height="resetInputHeight"
+        @toggle-fullscreen="toggleInputFullscreen"
+        @keydown="handleKeydown"
+      />
     </div>
     
     <!-- 空状态占位 -->
@@ -309,17 +143,14 @@ import { useAppStore } from '../stores/app';
 import { useNotificationStore } from '../stores/notifications';
 import { useSettingsStore } from '../stores/settings';
 import { useShortcutHints } from '../composables/useShortcutHints';
+import { useMessageLayout } from '../features/messages/useMessageLayout';
 import AppAvatar from '../components/common/AppAvatar.vue';
-import AppImage from '../components/common/AppImage.vue';
-import LoadingState from '../components/common/LoadingState.vue';
 import EmptyState from '../components/common/EmptyState.vue';
-import ErrorState from '../components/common/ErrorState.vue';
 import AppButton from '../components/common/AppButton.vue';
-import { EMOJI_MAP } from '../utils/coolapkEmoji';
-import { useRecentEmojis } from '../utils/recentEmojis';
-import EmojiPanel from '../components/common/EmojiPanel.vue';
-import { isSystemEmoji, type EmojiPicture } from '../utils/emojiPanel';
-import { handleAnchorClick } from '../utils/anchorClick';
+import MessageComposer from '../components/messages/MessageComposer.vue';
+import MessageSessionList from '../components/messages/MessageSessionList.vue';
+import MessageThread from '../components/messages/MessageThread.vue';
+import type { EmojiPicture } from '../utils/emojiPanel';
 import { clearMessageDraft, loadMessageDraft, saveMessageDraft } from '../utils/messageDrafts';
 import { isTouchMobilePlatform } from '../utils/platform';
 import { requestConfirmation } from '../utils/confirm';
@@ -362,13 +193,8 @@ import {
 import {
   appendPendingImageFiles,
   clearPendingImageUrls,
-  createEmojiImage as createEmojiImg,
   createRemotePendingImage,
-  extractStrayImagesFromEditor as extractStrayImages,
-  getEditorText,
-  parseTextToEditorNodes,
   removePendingImageAt,
-  syncEditorText,
   type PendingImageItem,
 } from '../features/messages/messageEditor';
 
@@ -454,12 +280,9 @@ const sendingImage = ref(false);
 const followingPartner = ref(false);
 const confirmingFollow = ref(false);
 
-const showEmojiPicker = ref(false);
-const emojiContainerRef = ref<HTMLElement | null>(null);
-const { addRecent } = useRecentEmojis();
-const fileInputRef = ref<HTMLInputElement | null>(null);
-const editorRef = ref<HTMLDivElement | null>(null);
-const chatAreaRef = ref<HTMLElement | null>(null);
+const composerRef = ref<InstanceType<typeof MessageComposer> | null>(null);
+const messageThreadRef = ref<InstanceType<typeof MessageThread> | null>(null);
+const chatAreaRef = computed(() => messageThreadRef.value?.getChatArea() ?? null);
 
 const pendingImages = ref<PendingImageItem[]>([]);
 
@@ -477,240 +300,25 @@ function clearPendingImages() {
   pendingImages.value = [];
 }
 
-function syncTextToEditor(text: string) {
-  syncEditorText(editorRef.value, text);
-}
-
-async function extractStrayImagesFromEditor() {
-  const files = await extractStrayImages(editorRef.value);
-  if (files.length > 0) appendPendingImages(files);
-  inputText.value = getEditorText(editorRef.value);
-}
-
-function handleEditorInput() {
-  const el = editorRef.value;
-  if (!el) return;
-  void extractStrayImagesFromEditor();
-  inputText.value = getEditorText(el);
-}
-
-function handlePaste(e: ClipboardEvent) {
-  const clipboardData = e.clipboardData;
-  if (!clipboardData) return;
-
-  const imageFiles: File[] = [];
-  if (clipboardData.items) {
-    for (let i = 0; i < clipboardData.items.length; i++) {
-      const item = clipboardData.items[i];
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) imageFiles.push(file);
-      }
-    }
-  }
-
-  if (imageFiles.length === 0 && clipboardData.files && clipboardData.files.length > 0) {
-    for (let i = 0; i < clipboardData.files.length; i++) {
-      const file = clipboardData.files[i];
-      if (file.type.startsWith('image/')) {
-        imageFiles.push(file);
-      }
-    }
-  }
-
-  if (imageFiles.length > 0) {
-    e.preventDefault();
-    appendPendingImages(imageFiles);
-    return;
-  }
-
-  const text = clipboardData.getData('text/plain');
-  if (text) {
-    e.preventDefault();
-    const el = editorRef.value;
-    if (!el) return;
-    const nodes = parseTextToEditorNodes(text);
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      const frag = document.createDocumentFragment();
-      let lastNode: Node | null = null;
-      nodes.forEach((n) => {
-        lastNode = n;
-        frag.appendChild(n);
-      });
-      range.insertNode(frag);
-      if (lastNode) {
-        const newRange = document.createRange();
-        newRange.setStartAfter(lastNode);
-        newRange.setEndAfter(lastNode);
-        sel.removeAllRanges();
-        sel.addRange(newRange);
-      }
-    } else {
-      nodes.forEach((n) => el.appendChild(n));
-    }
-    inputText.value = getEditorText(el);
-  }
-}
-
-function handleDrop(e: DragEvent) {
-  if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-    const imgFiles: File[] = [];
-    for (let i = 0; i < e.dataTransfer.files.length; i++) {
-      const file = e.dataTransfer.files[i];
-      if (file.type.startsWith('image/')) {
-        imgFiles.push(file);
-      }
-    }
-    if (imgFiles.length > 0) {
-      e.preventDefault();
-      appendPendingImages(imgFiles);
-    }
-  }
-}
-
-// --- 栏目拖拽调节与全屏状态 ---
-const DEFAULT_SIDEBAR_WIDTH = 320;
-const MIN_SIDEBAR_WIDTH = 220;
-const MAX_SIDEBAR_WIDTH = 500;
-
-const DEFAULT_INPUT_HEIGHT = 160;
-// 最小高度需容纳工具栏、正文和发送按钮，避免拖小时底部操作区被裁切。
-const MIN_INPUT_HEIGHT = 160;
-const MAX_INPUT_HEIGHT = 600;
-
-function getStoredNumber(key: string, fallback: number, min: number, max: number): number {
-  try {
-    const saved = localStorage.getItem(key);
-    if (saved) {
-      const val = parseInt(saved, 10);
-      if (!Number.isNaN(val) && val >= min && val <= max) return val;
-    }
-  } catch {}
-  return fallback;
-}
-
-const sidebarWidth = ref<number>(getStoredNumber('coolapk_messages_sidebar_width', DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
-const inputAreaHeight = ref<number>(getStoredNumber('coolapk_messages_input_height', DEFAULT_INPUT_HEIGHT, MIN_INPUT_HEIGHT, MAX_INPUT_HEIGHT));
-const visibleInputHeight = computed(() => Math.max(pendingImages.value.length > 0 ? 240 : MIN_INPUT_HEIGHT, inputAreaHeight.value));
-const isInputFullscreen = ref(false);
-
-function toggleInputFullscreen() {
-  isInputFullscreen.value = !isInputFullscreen.value;
-  void nextTick(() => {
-    editorRef.value?.focus();
-  });
-}
+const {
+  sidebarWidth,
+  inputAreaHeight,
+  visibleInputHeight,
+  isInputFullscreen,
+  startResizeSidebar,
+  resetSidebarWidth,
+  startResizeInput,
+  resetInputHeight,
+  toggleInputFullscreen,
+} = useMessageLayout({
+  pendingImageCount: computed(() => pendingImages.value.length),
+  focusEditor: () => composerRef.value?.focus(),
+});
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
-    if (showEmojiPicker.value) {
-      showEmojiPicker.value = false;
-      return;
-    }
-    if (isInputFullscreen.value) {
-      isInputFullscreen.value = false;
-    }
-  }
-}
-
-function handleClickOutside(event: MouseEvent) {
-  if (showEmojiPicker.value && emojiContainerRef.value && !emojiContainerRef.value.contains(event.target as Node)) {
-    showEmojiPicker.value = false;
-  }
-}
-
-// 侧边栏宽度拖拽
-let isDraggingSidebar = false;
-let startSidebarX = 0;
-let startSidebarWidth = DEFAULT_SIDEBAR_WIDTH;
-
-function startResizeSidebar(event: MouseEvent) {
-  event.preventDefault();
-  isDraggingSidebar = true;
-  startSidebarX = event.clientX;
-  startSidebarWidth = sidebarWidth.value;
-  document.body.style.cursor = 'col-resize';
-  document.body.style.userSelect = 'none';
-
-  window.addEventListener('mousemove', onMouseMoveSidebar);
-  window.addEventListener('mouseup', stopResizeSidebar);
-}
-
-function onMouseMoveSidebar(event: MouseEvent) {
-  if (!isDraggingSidebar) return;
-  const delta = event.clientX - startSidebarX;
-  const newWidth = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, startSidebarWidth + delta));
-  sidebarWidth.value = newWidth;
-}
-
-function stopResizeSidebar() {
-  if (!isDraggingSidebar) return;
-  isDraggingSidebar = false;
-  document.body.style.cursor = '';
-  document.body.style.userSelect = '';
-  window.removeEventListener('mousemove', onMouseMoveSidebar);
-  window.removeEventListener('mouseup', stopResizeSidebar);
-  try {
-    localStorage.setItem('coolapk_messages_sidebar_width', String(sidebarWidth.value));
-  } catch {}
-}
-
-function resetSidebarWidth() {
-  sidebarWidth.value = DEFAULT_SIDEBAR_WIDTH;
-  try {
-    localStorage.setItem('coolapk_messages_sidebar_width', String(DEFAULT_SIDEBAR_WIDTH));
-  } catch {}
-}
-
-// 输入框高度拖拽
-let isDraggingInput = false;
-let startInputY = 0;
-let startInputHeight = DEFAULT_INPUT_HEIGHT;
-
-function startResizeInput(event: PointerEvent) {
-  if (event.button !== 0) return;
-  event.preventDefault();
-  isDraggingInput = true;
-  startInputY = event.clientY;
-  startInputHeight = visibleInputHeight.value;
-  document.body.style.cursor = 'row-resize';
-  document.body.style.userSelect = 'none';
-
-  window.addEventListener('pointermove', onMouseMoveInput);
-  window.addEventListener('pointerup', stopResizeInput);
-  window.addEventListener('pointercancel', stopResizeInput);
-}
-
-function onMouseMoveInput(event: PointerEvent) {
-  if (!isDraggingInput) return;
-  const delta = startInputY - event.clientY; // 向上拖拽增大输入框高度
-  const maxAllowed = typeof window !== 'undefined' ? Math.floor(window.innerHeight * 0.8) : MAX_INPUT_HEIGHT;
-  const minAllowed = pendingImages.value.length > 0 ? 240 : MIN_INPUT_HEIGHT;
-  const newHeight = Math.max(minAllowed, Math.min(maxAllowed, startInputHeight + delta));
-  inputAreaHeight.value = newHeight;
-}
-
-function stopResizeInput() {
-  if (!isDraggingInput) return;
-  isDraggingInput = false;
-  document.body.style.cursor = '';
-  document.body.style.userSelect = '';
-  window.removeEventListener('pointermove', onMouseMoveInput);
-  window.removeEventListener('pointerup', stopResizeInput);
-  window.removeEventListener('pointercancel', stopResizeInput);
-  try {
-    localStorage.setItem('coolapk_messages_input_height', String(inputAreaHeight.value));
-  } catch {}
-}
-
-function resetInputHeight() {
-  inputAreaHeight.value = DEFAULT_INPUT_HEIGHT;
-  try {
-    localStorage.setItem('coolapk_messages_input_height', String(DEFAULT_INPUT_HEIGHT));
-  } catch {}
+  if (event.key !== 'Escape') return;
+  if (composerRef.value?.dismissEmojiPicker()) return;
+  if (isInputFullscreen.value) isInputFullscreen.value = false;
 }
 
 function getConversationKey(session: any = currentSession.value): string {
@@ -748,23 +356,10 @@ async function restoreDraft(session: any) {
   }
 
   draftSaved.value = Boolean(inputText.value.trim());
-  syncTextToEditor(inputText.value);
 
   // 手机恢复草稿或分享链接时不抢焦点，避免 WebView 为显示光标上移整个页面并挤掉顶部安全区。
   if (inputText.value && !isTouchMobilePlatform()) {
-    void nextTick(() => {
-      if (editorRef.value) {
-        editorRef.value.focus({ preventScroll: true });
-        const sel = window.getSelection();
-        if (sel) {
-          const range = document.createRange();
-          range.selectNodeContents(editorRef.value);
-          range.collapse(false);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        }
-      }
-    });
+    void nextTick(() => composerRef.value?.focusEnd());
   }
 }
 
@@ -1461,66 +1056,10 @@ const handleFollowPartner = async () => {
   }
 };
 
-const toggleEmojiPicker = () => {
-  showEmojiPicker.value = !showEmojiPicker.value;
-};
-
-const insertEmoji = (emojiName: string) => {
-  addRecent(emojiName);
-  const filename = EMOJI_MAP[emojiName];
-  const el = editorRef.value;
-  const emojiCode = isSystemEmoji(emojiName) ? emojiName : `[${emojiName}]`;
-  if (!el) {
-    inputText.value += emojiCode;
-    showEmojiPicker.value = false;
-    return;
-  }
-
-  el.focus();
-  const sel = window.getSelection();
-  const img = isSystemEmoji(emojiName) ? document.createTextNode(emojiName) : createEmojiImg(emojiName, filename);
-
-  if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    range.insertNode(img);
-
-    const newRange = document.createRange();
-    newRange.setStartAfter(img);
-    newRange.setEndAfter(img);
-    sel.removeAllRanges();
-    sel.addRange(newRange);
-  } else {
-    el.appendChild(img);
-  }
-
-  inputText.value = getEditorText(el);
-  showEmojiPicker.value = false;
-};
-
-const triggerImageSelect = () => {
-  showEmojiPicker.value = false;
-  if (fileInputRef.value) {
-    fileInputRef.value.click();
-  }
-};
-
 const selectFavoritePicture = (picture: EmojiPicture) => {
   if (sending.value || sendingImage.value) return;
   if (pendingImages.value.some(image => image.url === picture.url)) { showToast('已经添加了', 'info'); return; }
   pendingImages.value.push(createRemotePendingImage(picture.url, `favorite_${picture.id}`));
-};
-
-const handleImageSelected = async (e: Event) => {
-  const target = e.target as HTMLInputElement;
-  const file = target.files && target.files[0];
-  if (!file) return;
-
-  try {
-    await sendImageFile(file);
-  } finally {
-    if (target) target.value = '';
-  }
 };
 
 const sendImageFile = async (file?: File, existingUrl?: string): Promise<boolean> => {
@@ -1675,7 +1214,6 @@ const sendTextMessage = async (text: string): Promise<boolean> => {
     chatScrollMap.delete(String(ukey));
   }
   inputText.value = '';
-  if (editorRef.value) editorRef.value.innerHTML = '';
   await clearMessageDraft(currentUserUid.value, getConversationKey(currentSession.value));
   draftSaved.value = false;
   scrollToBottom();
@@ -1684,7 +1222,6 @@ const sendTextMessage = async (text: string): Promise<boolean> => {
 
 const sendMessage = async () => {
   if (sending.value || sendingImage.value) return;
-  await extractStrayImagesFromEditor();
   const text = inputText.value.trim();
   if (!text && pendingImages.value.length === 0) return;
   if (!currentSession.value) return;
@@ -1707,9 +1244,8 @@ const sendMessage = async () => {
     if (text) {
       if (`${currentUserUid.value}:${getConversationKey()}` !== owner) throw new Error('会话或账号已切换，请在目标会话重试');
       await sendTextMessage(text);
-    } else if (editorRef.value) {
+    } else {
       inputText.value = '';
-      editorRef.value.innerHTML = '';
     }
   } catch (err: any) {
     console.error('发送消息失败', err);
@@ -1726,14 +1262,12 @@ const sendMessage = async () => {
 function bindGlobalListeners() {
   window.addEventListener('coolapk-context-delete-message', handleDeleteMessageContext);
   window.addEventListener('keydown', handleGlobalKeydown);
-  window.addEventListener('click', handleClickOutside);
   window.addEventListener('coolapk-message-count-increased', handleMessageCountIncrease);
 }
 
 function unbindGlobalListeners() {
   window.removeEventListener('coolapk-context-delete-message', handleDeleteMessageContext);
   window.removeEventListener('keydown', handleGlobalKeydown);
-  window.removeEventListener('click', handleClickOutside);
   window.removeEventListener('coolapk-message-count-increased', handleMessageCountIncrease);
 }
 
@@ -1745,8 +1279,6 @@ onUnmounted(() => {
   messagePageActive = false;
   clearPendingImages();
   unbindGlobalListeners();
-  if (isDraggingSidebar) stopResizeSidebar();
-  if (isDraggingInput) stopResizeInput();
   stopMessagePolling();
   saveCurrentDraft();
 });
@@ -1759,83 +1291,11 @@ async function refreshMobilePage() { await loadSessions(); }
 .messages-page {
   display: flex;
   width: 100%;
-  height: 100%; /* 占满整个可用区域 */
+  height: 100%;
   background: var(--surface);
   border-radius: var(--radius-card);
   overflow: hidden;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
-}
-
-/* 左侧侧边栏 */
-.messages-sidebar {
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--border-light);
-  background: var(--surface);
-  flex-shrink: 0;
-  min-width: 220px;
-  max-width: 500px;
-}
-
-.sidebar-resizer {
-  width: 6px;
-  margin-left: -3px;
-  margin-right: -3px;
-  cursor: col-resize;
-  z-index: 10;
-  transition: background-color var(--duration-fast);
-  background: transparent;
-  flex-shrink: 0;
-}
-
-.sidebar-resizer:hover,
-.sidebar-resizer:active {
-  background-color: var(--brand-primary);
-  opacity: 0.6;
-}
-
-.sidebar-header {
-  padding: var(--space-4);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border-light);
-  background: var(--surface);
-  z-index: 1;
-}
-
-.sidebar-header h2 {
-  font-size: var(--font-size-title-md);
-  font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.session-list {
-  flex: 1;
-  overflow-y: auto;
-}
-
-.session-pagination-status,
-.session-pagination-action {
-  display: block;
-  width: 100%;
-  padding: 12px;
-  color: var(--text-secondary);
-  text-align: center;
-}
-
-.session-pagination-action {
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
-.session-list-status .main-header h3 {
-  font-size: var(--font-size-title-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  margin: 0;
 }
 
 .header-partner-info {
@@ -1869,66 +1329,27 @@ async function refreshMobilePage() { await loadSessions(); }
   color: var(--brand-primary);
 }
 
-.session-list-status {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: var(--space-4);
+.header-partner-info.clickable-header {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  transition: all var(--duration-fast);
 }
 
-/* 左侧会话未登录引导状态卡片 */
-.not-login-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: var(--space-6) var(--space-4);
-  gap: 10px;
-  animation: notLoginPop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+.header-partner-info.clickable-header:hover {
+  background: var(--surface-hover);
 }
 
-.not-login-icon-box {
-  width: 54px;
-  height: 54px;
-  border-radius: var(--radius-pill);
-  background: var(--brand-soft, rgba(16, 185, 129, 0.12));
-  color: var(--brand-primary, #10b981);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
-  margin-bottom: 4px;
+.header-partner-info.clickable-header:hover .header-username {
+  color: var(--brand-primary);
 }
 
-.not-login-title {
-  font-size: var(--font-size-title-sm, 15px);
-  font-weight: var(--font-weight-semibold, 600);
-  color: var(--text-primary);
-  margin: 0;
+.header-partner-info.clickable-header:hover .header-link-icon {
+  opacity: 1;
+  transform: translateX(3px);
+  color: var(--brand-primary);
 }
 
-.not-login-desc {
-  font-size: var(--font-size-caption, 12px);
-  color: var(--text-tertiary);
-  margin: 0;
-  line-height: 1.5;
-  max-width: 200px;
-}
-
-.not-login-btn {
-  margin-top: 6px;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
-  transition: all 0.2s ease;
-}
-
-.not-login-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
-}
-
-/* 右侧主聊天区未登录大卡片 */
 .not-login-main-card {
   display: flex;
   flex-direction: column;
@@ -1977,155 +1398,6 @@ async function refreshMobilePage() { await loadSessions(); }
   }
 }
 
-.session-item {
-  display: flex;
-  align-items: center;
-  padding: var(--space-3) var(--space-4);
-  gap: var(--space-3);
-  cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-default);
-  border-bottom: 1px solid transparent;
-}
-
-.session-item:hover {
-  background: var(--surface-hover);
-}
-
-.session-item.active {
-  background: var(--brand-soft);
-  border-left: 3px solid var(--brand-primary);
-}
-
-.session-item {
-  display: flex;
-  align-items: center;
-  padding: var(--space-3) var(--space-4);
-  gap: var(--space-3);
-  cursor: pointer;
-  transition: background-color 0.2s ease, transform 0.15s ease;
-  border-bottom: 1px solid transparent;
-  position: relative;
-}
-
-.session-item:hover {
-  background: var(--surface-hover);
-}
-
-.session-item:hover .app-avatar {
-  transform: scale(1.05);
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.session-item.active {
-  background: var(--brand-soft);
-  border-left: 3px solid var(--brand-primary);
-  animation: activeSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes activeSlideIn {
-  from {
-    border-left-width: 0px;
-    opacity: 0.8;
-  }
-  to {
-    border-left-width: 3px;
-    opacity: 1;
-  }
-}
-
-.session-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--space-1);
-}
-
-.session-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.session-header .username {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--font-size-body);
-  font-weight: var(--font-weight-medium);
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session-header .time {
-  font-size: var(--font-size-caption);
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.session-unread-badge {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  background: #ef4444;
-  font-size: 11px;
-  font-weight: var(--font-weight-bold);
-  line-height: 18px;
-  box-sizing: border-box;
-  flex-shrink: 0;
-  margin-left: 2px;
-  animation: badgePopIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-@keyframes badgePopIn {
-  from {
-    transform: scale(0.6);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-.session-item.unread .session-header .username {
-  font-weight: var(--font-weight-bold);
-}
-
-.last-message {
-  font-size: var(--font-size-sub);
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.last-message :deep(.coolapk-emoji),
-.last-message :deep(img.coolapk-emoji) {
-  width: 15px !important;
-  height: 15px !important;
-  max-width: 15px !important;
-  max-height: 15px !important;
-  min-width: 15px !important;
-  min-height: 15px !important;
-  vertical-align: middle !important;
-  display: inline-block !important;
-  margin: 0 1px !important;
-}
-
-/* 右侧主聊天区 */
 .messages-main {
   flex: 1;
   display: flex;
@@ -2156,729 +1428,6 @@ async function refreshMobilePage() { await loadSessions(); }
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   margin: 0;
-}
-
-.chat-area {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  position: relative;
-  opacity: 0;
-  transition: opacity 0.12s ease-out;
-}
-
-.chat-area.is-ready {
-  opacity: 1;
-}
-
-.chat-status {
-  display: flex;
-  justify-content: center;
-  padding: var(--space-4);
-}
-
-.chat-pagination-status,
-.chat-pagination-error {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  z-index: 2;
-  transform: translateX(-50%);
-  padding: 4px 12px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: var(--surface-hover);
-  color: var(--text-tertiary);
-  font-size: var(--font-size-caption);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.chat-pagination-error {
-  cursor: pointer;
-  color: var(--brand-primary);
-}
-
-.system-notice-item {
-  display: flex;
-  justify-content: center;
-  margin: var(--space-2) 0;
-  width: 100%;
-}
-
-.system-notice-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px 14px;
-  border-radius: var(--radius-pill);
-  background: var(--background-secondary, rgba(0, 0, 0, 0.04));
-  color: var(--text-tertiary);
-  font-size: 12px;
-  line-height: 1.4;
-  text-align: center;
-  max-width: 85%;
-  transition: all 0.2s ease;
-}
-
-.system-notice-badge.is-warning {
-  background: rgba(234, 179, 8, 0.12);
-  color: #b45309;
-  border: 1px solid rgba(234, 179, 8, 0.25);
-}
-
-.system-notice-badge .warning-icon {
-  color: #d97706;
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-.message-item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  max-width: 75%;
-  animation: msgBubblePopIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-}
-
-@keyframes msgBubblePopIn {
-  0% {
-    opacity: 0;
-    transform: translateY(8px) scale(0.97);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.message-item.is-self {
-  align-self: flex-end;
-  justify-content: flex-end;
-}
-
-.msg-avatar {
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.msg-avatar.clickable-avatar {
-  cursor: pointer;
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.msg-avatar.clickable-avatar:hover {
-  transform: scale(1.08);
-}
-
-.header-partner-info.clickable-header {
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: var(--radius-md);
-  transition: all var(--duration-fast);
-}
-
-.header-partner-info.clickable-header:hover {
-  background: var(--surface-hover);
-}
-
-.header-partner-info.clickable-header:hover .header-username {
-  color: var(--brand-primary);
-}
-
-.header-partner-info.clickable-header:hover .header-link-icon {
-  opacity: 1;
-  transform: translateX(3px);
-  color: var(--brand-primary);
-}
-
-.message-content {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: var(--space-1);
-}
-
-.message-item.is-self .message-content {
-  align-items: flex-end;
-}
-
-.bubble-wrapper {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.bubble {
-  position: relative;
-  min-width: 0;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  color: var(--text-primary);
-  font-size: var(--font-size-body);
-  line-height: 1.5;
-  word-break: break-word;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  display: inline-block;
-  transition: box-shadow 0.2s ease;
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
-}
-
-.bubble:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.msg-text {
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
-}
-
-.bubble :deep(*) {
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-/* 对方消息气泡（左侧，白色/Surface背景 + 左小尖角引出） */
-.message-item:not(.is-self) .bubble {
-  border-top-left-radius: 2px;
-}
-
-.message-item:not(.is-self) .bubble::before {
-  content: '';
-  position: absolute;
-  top: 10px;
-  left: -6px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-right: 7px solid var(--surface);
-}
-
-/* 自己消息气泡（右侧，品牌绿背景 + 右小尖角引出） */
-.message-item.is-self .bubble {
-  background: var(--brand-primary);
-  color: #ffffff;
-  border-top-right-radius: 2px;
-}
-
-.message-item.is-self .bubble::before {
-  content: '';
-  position: absolute;
-  top: 10px;
-  right: -6px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 7px solid var(--brand-primary);
-}
-
-/* 富文本、超链接与表情图片全局样式 */
-.bubble :deep(a) {
-  color: var(--brand-primary);
-  text-decoration: underline;
-  word-break: break-all;
-  cursor: pointer;
-}
-
-.message-item.is-self .bubble :deep(a) {
-  color: #ffffff !important;
-  font-weight: bold;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.bubble :deep(.coolapk-emoji) {
-  width: 22px;
-  height: 22px;
-  vertical-align: -5px;
-  display: inline-block;
-  margin: 0 1px;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.msg-pic-only-card {
-  max-width: min(320px, 100%);
-  box-sizing: border-box;
-  max-height: 480px;
-  border-radius: var(--radius-card, 10px);
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  border: 1px solid var(--border-light);
-  background: transparent;
-  display: inline-block;
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.msg-pic-only-card:hover {
-  transform: scale(1.02);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-}
-
-.msg-pic-only-card :deep(.msg-pure-img) {
-  min-width: 0;
-  max-width: 100%;
-  max-height: 480px;
-  width: auto;
-  height: auto;
-  display: flex;
-  background: transparent;
-}
-
-.msg-pic-only-card :deep(.msg-pure-img img) {
-  min-width: 0;
-  max-width: 100%;
-  max-height: 480px;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  border-radius: var(--radius-card, 10px);
-  display: block;
-}
-
-.bubble :deep(.msg-pic-container) {
-  max-width: min(320px, 100%);
-  max-height: 380px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  margin-bottom: var(--space-1);
-  background: transparent;
-}
-
-.bubble :deep(.msg-img) {
-  min-width: 0;
-  max-width: 100%;
-  max-height: 380px;
-  width: auto;
-  height: auto;
-  background: transparent;
-  display: flex;
-}
-
-.bubble :deep(.msg-img img) {
-  min-width: 0;
-  max-width: 100%;
-  max-height: 380px;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  border-radius: var(--radius-sm);
-  display: block;
-  cursor: pointer;
-  transition: transform 0.2s ease;
-}
-
-.bubble :deep(.msg-img img:hover) {
-  transform: scale(1.03);
-}
-
-.msg-time {
-  font-size: var(--font-size-caption);
-  color: var(--text-tertiary);
-  margin-top: 2px;
-}
-
-.input-area {
-  background: var(--surface);
-  border-top: 1px solid var(--border-light);
-  padding: var(--space-3) var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  position: relative;
-  box-sizing: border-box;
-  /* 输入区不参与聊天列表的压缩，列表通过自身滚动让出空间。 */
-  flex-shrink: 0;
-  min-height: 160px;
-  transition: height 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, padding 0.25s ease;
-}
-
-/* 粘贴图片后为预览额外留出一行，移除后恢复用户原来的输入区高度。 */
-.input-area.has-pending-images { min-height: 240px; }
-
-.input-area.is-fullscreen {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 100% !important;
-  z-index: 100;
-  padding: var(--space-4);
-  border-top: none;
-  background: var(--surface);
-  box-shadow: 0 0 24px rgba(0, 0, 0, 0.12);
-  animation: fullscreenExpand 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes fullscreenExpand {
-  from {
-    opacity: 0.92;
-    transform: scaleY(0.97);
-    transform-origin: bottom;
-  }
-  to {
-    opacity: 1;
-    transform: scaleY(1);
-  }
-}
-
-.input-resizer {
-  /* 指针拖动同时支持鼠标与触屏，避免触屏手势变成页面滚动。 */
-  touch-action: none;
-  position: absolute;
-  top: -4px;
-  left: 0;
-  right: 0;
-  height: 8px;
-  cursor: row-resize;
-  z-index: 20;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.input-resizer .resizer-handle-bar {
-  width: 36px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--border);
-  opacity: 0.6;
-  transition: all var(--duration-fast);
-}
-
-.input-resizer:hover .resizer-handle-bar,
-.input-resizer:active .resizer-handle-bar {
-  background: var(--brand-primary);
-  width: 52px;
-  opacity: 1;
-}
-
-.input-toolbar {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  position: relative;
-}
-
-.toolbar-left,
-.toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.toolbar-btn {
-  background: transparent;
-  border: none;
-  font-size: 16px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  transition: all var(--duration-fast);
-}
-
-.toolbar-btn:hover,
-.toolbar-btn.is-active {
-  color: var(--brand-primary);
-  background: var(--surface-hover);
-}
-
-.toolbar-btn:active {
-  transform: scale(0.92);
-}
-
-.fullscreen-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  border-radius: var(--radius-pill);
-  padding: 3px 10px;
-  transition: all 0.2s ease;
-}
-
-.fullscreen-btn.is-active {
-  color: var(--brand-primary);
-  background: var(--brand-soft);
-  font-weight: var(--font-weight-medium);
-}
-
-.fullscreen-btn:active {
-  transform: scale(0.94);
-}
-
-.fullscreen-tip-text {
-  font-size: 12px;
-}
-
-.emoji-picker-container {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.emoji-picker-popover {
-  position: absolute;
-  bottom: 36px;
-  left: 0;
-  width: min(360px, calc(100vw - 32px));
-  background: var(--surface);
-  border: 1px solid var(--border-light);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-  border-radius: var(--radius-card);
-  z-index: 100;
-  display: block;
-  overflow: hidden;
-  padding: 0;
-  animation: emojiSpringPop 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
-  transform-origin: bottom left;
-}
-
-@keyframes emojiSpringPop {
-  0% {
-    opacity: 0;
-    transform: scale(0.9) translateY(8px);
-  }
-  70% {
-    opacity: 1;
-    transform: scale(1.02) translateY(-2px);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-.emoji-section-title {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-  padding: 4px 4px 6px 4px;
-  user-select: none;
-  font-weight: 500;
-  line-height: 1;
-}
-
-.emoji-section-title:not(:first-child) {
-  margin-top: 8px;
-}
-
-.emoji-grid-recent {
-  margin-bottom: 2px;
-}
-
-.emoji-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 4px;
-}
-
-.emoji-item-btn {
-  background: transparent;
-  border: none;
-  padding: 4px;
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.15s ease;
-}
-
-.emoji-item-btn:hover {
-  background: var(--surface-hover);
-  transform: scale(1.28);
-  z-index: 10;
-}
-
-.emoji-item-btn:active {
-  transform: scale(1.05);
-}
-
-.emoji-item-btn img {
-  width: 24px;
-  height: 24px;
-}
-
-.follow-action-btn {
-  margin-left: var(--space-2);
-  background: var(--brand-primary);
-  color: #ffffff;
-  border: none;
-  padding: 2px 10px;
-  border-radius: var(--radius-pill);
-  font-size: 11px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: all 0.2s ease;
-}
-
-.follow-action-btn:hover {
-  opacity: 0.92;
-  transform: scale(1.02);
-}
-
-.follow-action-btn:disabled {
-  cursor: wait;
-  opacity: 0.7;
-}
-
-.follow-action-btn:disabled:hover {
-  transform: none;
-}
-
-.pending-images-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-  overflow-x: auto;
-  flex-shrink: 0;
-}
-
-.pending-image-card {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  border-radius: var(--radius-sm, 8px);
-  overflow: hidden;
-  border: 1px solid var(--border-light);
-  background: var(--surface-hover);
-  flex-shrink: 0;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-}
-
-.pending-image-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.pending-image-remove-btn {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.65);
-  color: #ffffff;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  transition: all 0.15s ease;
-  padding: 0;
-}
-
-.pending-image-remove-btn:hover {
-  background: rgba(239, 68, 68, 0.9);
-  transform: scale(1.1);
-}
-
-.message-rich-editor {
-  width: 100%;
-  /* 正文只占剩余空间并独立滚动，不能把发送按钮挤出固定高度的输入区。 */
-  flex: 1 1 0;
-  min-height: 0;
-  border: none;
-  background: transparent;
-  font-family: inherit;
-  font-size: var(--font-size-body);
-  color: var(--text-primary);
-  outline: none;
-  line-height: 1.6;
-  padding: 0;
-  box-sizing: border-box;
-  overflow-y: auto;
-  word-break: break-word;
-  white-space: pre-wrap;
-  user-select: text;
-}
-
-.message-rich-editor:empty::before {
-  content: attr(data-placeholder);
-  color: var(--text-tertiary);
-  pointer-events: none;
-}
-
-.input-area.is-fullscreen .message-rich-editor {
-  font-size: 14.5px;
-  line-height: 1.7;
-}
-
-.message-rich-editor :deep(.coolapk-emoji),
-.message-rich-editor img.coolapk-emoji {
-  width: 22px;
-  height: 22px;
-  vertical-align: -4px;
-  display: inline-block;
-  margin: 0 1px;
-}
-
-.diagnostic-report-action {
-  margin-top: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-textarea::placeholder {
-  color: var(--text-tertiary);
-}
-
-.input-bottom-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: auto;
-  flex-shrink: 0;
-}
-
-.draft-status-placeholder {
-  flex: 1;
-}
-
-.draft-status { 
-  color: var(--text-tertiary); 
-  font-size: var(--font-size-caption); 
-  animation: draftFade 0.2s ease;
-}
-
-@keyframes draftFade {
-  from { opacity: 0; transform: translateX(-4px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-.draft-status i { margin-right: 5px; color: var(--brand-primary); }
-
-.input-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
 }
 
 .mobile-session-back {
