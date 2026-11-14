@@ -77,7 +77,9 @@ Windows 下一键构建 NSIS 安装包与便携包：
 ```
 
 脚本会准备工具链环境、构建前端与 Rust release 产物、生成安装包和便携 zip，
-并把结果与 SHA256 校验清单写入 `artifacts/`。
+并把结果与 SHA256 校验清单写入仓库同级的 `dist/` 目录（`D:\project\kean-desktop\dist`）。
+
+> 仓库内的 `dist/` 是 Vite 前端构建产物，会被下次构建清空；发布用的安装包不要放那里。
 
 可选参数：`-Version 2.1.0` 同步版本号，`-SkipTests` 跳过类型检查与测试。
 

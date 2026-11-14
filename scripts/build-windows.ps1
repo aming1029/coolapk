@@ -22,8 +22,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-# 注意：dist/ 是 Vite 的前端产物目录，安装包不能放这里，否则会被下次构建清掉。
-$distDir = Join-Path $repoRoot 'artifacts'
+# 注意：仓库内的 dist/ 是 Vite 前端产物目录，会被下次构建清空；
+# 发布产物统一放到仓库同级的 dist/，与源码目录分开，避免误删或误提交。
+$distDir = Join-Path (Split-Path -Parent $repoRoot) 'dist'
 $releaseDir = Join-Path $repoRoot 'src-tauri\target\release'
 
 function Write-Step($message) { Write-Host "==> $message" -ForegroundColor Cyan }
@@ -77,7 +78,7 @@ Invoke-Native 'npx' @('tauri', 'build', '--bundles', 'nsis')
 Write-Step '打包便携版'
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 Get-ChildItem -LiteralPath $distDir -File | Where-Object {
-  $_.Name -match '(?:setup\.exe|portable-x64\.zip|SHA256SUMS\.txt)$'
+  $_.Name -match '(?:setup\.exe|portable\.exe|portable-x64\.zip|SHA256SUMS\.txt)$'
 } | Remove-Item -Force
 # 必须显式按 UTF-8 读取：PowerShell 5.1 默认按 ANSI 解析，中文描述会让 JSON 解析失败。
 $version = (Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
@@ -93,6 +94,8 @@ if (-not (Test-Path -LiteralPath $installerSource -PathType Leaf)) {
   throw "未找到当前版本的 NSIS 安装包: $installerSource"
 }
 Copy-Item $installerSource (Join-Path $distDir "coolapk-desktop_${version}_x64-setup.exe") -Force
+# 单文件便携版：应用内自动更新下载的附件，必须带 x64 + setup/portable 命名规则才能被识别。
+Copy-Item (Join-Path $releaseDir 'coolapk_desktop.exe') (Join-Path $distDir "coolapk-desktop_${version}_x64-portable.exe") -Force
 
 Write-Step '生成校验清单'
 $lines = Get-ChildItem $distDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object {
