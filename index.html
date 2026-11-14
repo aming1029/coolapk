@@ -9,10 +9,82 @@
       html, body {
         -webkit-text-size-adjust: 100%;
         text-size-adjust: 100%;
+        margin: 0;
+        background: #f4f6f5;
+        color: #1f2937;
+        font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(900px 520px at 12% -8%, rgba(16, 185, 129, .16), transparent 65%),
+          radial-gradient(760px 480px at 100% 0%, rgba(6, 182, 212, .12), transparent 68%),
+          #f4f6f5;
+      }
+      .boot-card {
+        display: grid;
+        justify-items: center;
+        gap: 14px;
+        width: min(440px, calc(100vw - 48px));
+        padding: 32px 28px;
+        border: 1px solid rgba(16, 185, 129, .2);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, .86);
+        box-shadow: 0 18px 60px rgba(15, 23, 42, .1);
+        text-align: center;
+      }
+      .boot-mark {
+        display: grid;
+        place-items: center;
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        background: #10b981;
+        color: #fff;
+        font-size: 22px;
+        font-weight: 800;
+      }
+      .boot-title { font-size: 18px; font-weight: 700; }
+      .boot-tip { color: #64748b; font-size: 13px; }
+      .boot-spinner {
+        width: 20px;
+        height: 20px;
+        border: 2px solid rgba(16, 185, 129, .2);
+        border-top-color: #10b981;
+        border-radius: 50%;
+        animation: boot-spin .8s linear infinite;
+      }
+      .boot-help {
+        opacity: 0;
+        color: #475569;
+        font-size: 12px;
+        line-height: 1.7;
+        animation: boot-help-in .2s ease 12s forwards;
+      }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      @keyframes boot-help-in { to { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-spinner { animation: none; }
       }
     </style>
   </head>
   <body>
+    <div id="boot-splash" role="status" aria-live="polite">
+      <div class="boot-card">
+        <div class="boot-mark">酷</div>
+        <div class="boot-title">正在启动 coolapk</div>
+        <div class="boot-spinner" aria-hidden="true"></div>
+        <div class="boot-tip">正在读取本地设置和登录状态…</div>
+        <div class="boot-help">
+          如果长时间停留在此页，请安装或更新 Microsoft Edge WebView2 Runtime 后重新打开应用。<br />
+          也可以在应用数据目录的 logs 文件夹查看 coolapk-diagnostics.log。
+        </div>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

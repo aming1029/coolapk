@@ -15,6 +15,7 @@ import { normalizeCoolapkDeepLink } from './utils/coolapkRoute';
 import { installDiagnosticLogging, logDiagnostic, logDiagnosticLimited, logWindowErrorDiagnostic, summarizeDiagnosticError } from './utils/diagnosticLogger';
 import { isResizeObserverWarning } from './utils/windowError';
 import { initializeWebViewCompatibility } from './utils/webviewCompatibility';
+import { APP_VERSION } from './constants/version';
 
 // 在设置、路由及启动检查开始发起请求前补齐旧 WebView 接口。
 initializeWebViewCompatibility();
@@ -86,6 +87,28 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
+function withBootstrapTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`${label} 初始化超时`));
+    }, timeoutMs);
+    task.then(value => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    }, error => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 app.config.errorHandler = (err, _instance, info) => {
   const msg = `${info || 'render'}: ${describeError(err)}`;
   logDiagnostic('error', 'vue', 'render_exception', `${info || 'render'} ${summarizeDiagnosticError(err)}`);
@@ -146,20 +169,25 @@ async function setupDeepLinkHandling() {
 }
 
 async function bootstrap() {
-  await androidIconStylesReady;
-  await initializeAndroidSafeArea();
-  await settingsStore.initializeSettings();
-  // 原生层已恢复登录 Cookie：游客生成并缓存 DUID，已登录时不会自动获取或启用。
-  if (isTauri()) {
-    try { await invoke('initialize_device_identity'); }
-    catch { logDiagnostic('warn', 'device', 'identity_initialization_failed'); }
-  }
+  await withBootstrapTimeout(androidIconStylesReady, 4_000, 'Android 图标样式')
+    .catch(error => logDiagnostic('warn', 'app', 'icon_styles_timeout', summarizeDiagnosticError(error)));
+  await withBootstrapTimeout(initializeAndroidSafeArea(), 2_000, '安全区')
+    .catch(error => logDiagnostic('warn', 'app', 'safe_area_timeout', summarizeDiagnosticError(error)));
+  await withBootstrapTimeout(settingsStore.initializeSettings(), 6_000, '设置')
+    .catch(error => logDiagnostic('warn', 'settings', 'initialization_failed', summarizeDiagnosticError(error)));
   logDiagnostic('info', 'app', 'settings-ready');
   app.mount('#app');
+  document.getElementById('boot-splash')?.remove();
   // 设置文件在应用挂载前读取；缩放等依赖 #app 的外观设置需在挂载后再应用一次。
   settingsStore.applyAppearance();
-  await setupDeepLinkHandling();
   logDiagnostic('info', 'app', 'ready');
+  // 设备身份会访问外部 DUID 服务，不能阻塞首屏挂载；请求层仍会在需要时等待或回退。
+  if (isTauri()) {
+    void withBootstrapTimeout(invoke('initialize_device_identity'), 15_000, '设备身份')
+      .then(() => logDiagnostic('info', 'device', 'identity_initialized'))
+      .catch(error => logDiagnostic('warn', 'device', 'identity_initialization_failed', summarizeDiagnosticError(error)));
+  }
+  void setupDeepLinkHandling();
   const readyAt = Date.now();
   window.setInterval(() => {
     if (!document.hidden) {
@@ -168,4 +196,18 @@ async function bootstrap() {
   }, 30_000);
 }
 
-void bootstrap();
+void bootstrap().catch(error => {
+  const message = describeError(error);
+  logDiagnostic('error', 'app', 'bootstrap_failed', summarizeDiagnosticError(error));
+  console.error('[bootstrap]', message, error);
+  const splash = document.getElementById('boot-splash');
+  if (splash) {
+    const title = splash.querySelector<HTMLElement>('.boot-title');
+    const tip = splash.querySelector<HTMLElement>('.boot-tip');
+    if (title) title.textContent = '应用启动失败';
+    if (tip) tip.textContent = `${message}（版本 ${APP_VERSION}）`;
+    splash.querySelector<HTMLElement>('.boot-spinner')?.remove();
+  } else {
+    showGlobalError(message);
+  }
+});
