@@ -47,6 +47,10 @@
         @click.capture="handleFeedClickCapture"
       >
         <UpdatedFollowUsers ref="updatedFollowUsers" v-if="isFollowingTab && (!selectedFollowSubChannel || isDefaultFollowSubChannel(selectedFollowSubChannel))" :feeds="followingUpdateFeeds" />
+        <div v-if="error && feeds.length > 0" class="feed-degrade-notice" role="status">
+          <span>{{ error }}</span>
+          <button type="button" @click="loadFeeds(true)">重试</button>
+        </div>
         <!-- 1. 头条 Tab 专属：服务端要闻与动态子栏目 -->
         <div v-if="isHeadlineTab" class="headline-header-section">
           <!-- APK ConfigPage.rawEntities 动态下发的头条子栏目 -->
@@ -379,6 +383,7 @@ import { CoolapkTauriAPI } from '../api/coolapk';
 import { useSettingsStore } from '../stores/settings';
 import { hasFeedRenderableContent, shouldHideFeed } from '../utils/feedFilter';
 import { describeApiError } from '../utils/apiErrorMessage';
+import { logDiagnostic, logDiagnosticLimited, summarizeDiagnosticError } from '../utils/diagnosticLogger';
 import { decodeDiscoveryRouteSegment, getEntityImage, getEntityKey, parseDiscoveryPage, resolveDiscoveryRoute } from '../utils/discovery';
 import { normalizeCoolapkRoute } from '../utils/coolapkRoute';
 import type { FeedLayout, ConfigPageTab } from '../types/settings';
@@ -531,6 +536,8 @@ const loadingMore = ref(false);
 const noMore = ref(false);
 const error = ref('');
 const errorTitle = ref('');
+
+class HomeFeedDataError extends Error {}
 const headlineCursor = reactive({ firstItem: '', lastItem: '' });
 const headlinePageContext = ref('');
 const headlineResolvedUrl = ref('');
@@ -1123,12 +1130,38 @@ async function fetchTabApi(tabKey: string, p: number, background = false) {
         p,
       );
     }
-    return await CoolapkTauriAPI.getIndexV8EntitiesPaged({
-      page: p,
-      // 对齐 APK：刷新传首条，加载更多传末条，避免刷新退回无游标的旧推荐。
-      firstItem: p === 1 ? headlineCursor.firstItem : '',
-      lastItem: p > 1 ? headlineCursor.lastItem : '',
-    });
+    let primaryError: unknown;
+    try {
+      const primary = await CoolapkTauriAPI.getIndexV8EntitiesPaged({
+        page: p,
+        // 对齐 APK：刷新传首条，加载更多传末条，避免刷新退回无游标的旧推荐。
+        firstItem: p === 1 ? headlineCursor.firstItem : '',
+        lastItem: p > 1 ? headlineCursor.lastItem : '',
+      });
+      if (Array.isArray(primary?.data)) {
+        if (p > 1 || primary.data.length > 0) return primary;
+      } else {
+        primaryError = new HomeFeedDataError('首页接口未返回 data 数组');
+      }
+    } catch (error) {
+      primaryError = error;
+    }
+
+    // 首页主接口异常时仅第一页降级到热榜；分页尾部为空仍按正常“没有更多”处理。
+    if (p === 1) {
+      try {
+        const fallback = await CoolapkTauriAPI.getHotFeeds(p);
+        if (Array.isArray(fallback?.data) && fallback.data.length > 0) {
+          logDiagnosticLimited('warn', 'home', 'headline_fallback', 'primary=unavailable fallback=hot');
+          return { ...fallback, homeFallbackSource: 'hot' };
+        }
+      } catch (fallbackError) {
+        logDiagnosticLimited('warn', 'home', 'headline_fallback_failed', summarizeDiagnosticError(fallbackError));
+      }
+    }
+    throw primaryError instanceof Error
+      ? primaryError
+      : new HomeFeedDataError('首页接口未返回可识别的 data 数组');
   }
 
   if (matchedTab ? isHotConfigTab(matchedTab) : isHotTab.value) {
@@ -1278,6 +1311,11 @@ async function loadFeeds(isRefresh: boolean = false) {
       }
       if (res && res.data && Array.isArray(res.data)) {
         rawItems = res.data;
+        if (res.homeFallbackSource === 'hot') {
+          // 走常规渲染与分页流程，后续翻页继续由热榜接管，避免反复回到第一页。
+          errorTitle.value = '首页推荐已降级';
+          error.value = '首页推荐暂时无法加载，当前显示热榜内容。可稍后重试。';
+        }
         if (isHotTab.value) updateHotNavigation(rawItems);
         if (isFollowingTab.value && rawItems.some(isFollowUpdateCard)) followingUpdateFeeds.value = rawItems.filter(isFollowUpdateCard);
         if (isHeadlineTab.value && !selectedHeadlineSubChannelUrl.value && page.value === 1) updateHeadlineQuickLinks(rawItems);
@@ -1316,6 +1354,8 @@ async function loadFeeds(isRefresh: boolean = false) {
         } else {
           feeds.value.push(...validItems);
         }
+      } else {
+        throw new HomeFeedDataError('首页接口响应缺少 data 数组');
       }
       page.value++;
     }
@@ -1346,9 +1386,15 @@ async function loadFeeds(isRefresh: boolean = false) {
   } catch (err: any) {
     if (sequence === feedRequestSequence) {
       // 403 风控、限流、验证码等失败形态都翻译成用户能看懂并照做的提示。
-      const described = describeApiError(err, '加载动态失败');
-      errorTitle.value = described.title;
-      error.value = described.message;
+      if (err instanceof HomeFeedDataError) {
+        errorTitle.value = '首页数据格式异常';
+        error.value = err.message;
+      } else {
+        const described = describeApiError(err, '加载动态失败');
+        errorTitle.value = described.title;
+        error.value = described.message;
+      }
+      logDiagnosticLimited('warn', 'home', 'feed_load_failed', `tab=${activeTab.value} page=${page.value} category=${err instanceof HomeFeedDataError ? 'response_shape' : 'request'} reason=${summarizeDiagnosticError(err)}`);
     }
   } finally {
     if (sequence === feedRequestSequence) { loading.value = false; loadingMore.value = false; }
@@ -1789,6 +1835,28 @@ async function refreshMobilePage() { await loadFeeds(true); }
   flex: 1 1 auto;
   min-width: 0;
   border-bottom: 0;
+}
+
+.feed-degrade-notice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, .06));
+  background: color-mix(in srgb, var(--brand-primary) 7%, var(--surface));
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.feed-degrade-notice button {
+  border: 0;
+  padding: 2px 6px;
+  background: transparent;
+  color: var(--brand-primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .follow-subchannel-bar {

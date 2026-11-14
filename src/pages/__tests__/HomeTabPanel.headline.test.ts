@@ -7,7 +7,7 @@ import HomeTabPanel from '../HomeTabPanel.vue';
 import { useSettingsStore } from '../../stores/settings';
 import { routeNavigationIsHistory } from '../../utils/routeScroll';
 
-const api = vi.hoisted(() => ({ getIndexV8EntitiesPaged: vi.fn(), getDiscoveryPageData: vi.fn(), getHotSearchKeywords: vi.fn().mockResolvedValue([]) }));
+const api = vi.hoisted(() => ({ getIndexV8EntitiesPaged: vi.fn(), getHotFeeds: vi.fn(), getDiscoveryPageData: vi.fn(), getHotSearchKeywords: vi.fn().mockResolvedValue([]) }));
 vi.mock('../../api/coolapk', () => ({ CoolapkTauriAPI: api }));
 
 it.each([390, 1280])('宽度 %s 下头条刷新保留首条锚点，分页只传末条游标', async (width) => {
@@ -112,6 +112,46 @@ it.each([
       expect(scrollTo).toHaveBeenCalledWith({ left: 0, behavior: 'smooth' });
     }
   } finally { wrapper.unmount(); }
+});
+
+it('首页接口缺少 data 数组时显示错误而不是伪装成空列表', async () => {
+  api.getIndexV8EntitiesPaged.mockReset().mockResolvedValue({ status: 1004, message: '请求验证错误' });
+  const tab = { title: '头条', page_name: 'V9_HOME_TAB_HEADLINE', url: '/main/headline' };
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] });
+  await router.push('/');
+  const wrapper = mount(HomeTabPanel, {
+    props: { embedded: true, selected: true, tabKey: tab.page_name, tabs: [tab] },
+    global: { plugins: [router, createPinia()], stubs: { FeedCard: true, FeedVideoCard: true, AppImage: true } },
+  });
+  try {
+    await flushPromises();
+    expect(wrapper.find('.error-padding').exists()).toBe(true);
+    expect(wrapper.find('.empty-padding').exists()).toBe(false);
+    expect(wrapper.get('.error-title').text()).toBe('首页数据格式异常');
+  } finally {
+    wrapper.unmount();
+    vi.restoreAllMocks();
+  }
+});
+
+it('首页推荐异常时降级显示热榜并给出非阻塞提示', async () => {
+  api.getIndexV8EntitiesPaged.mockReset().mockResolvedValue({ status: 1004, message: '请求验证错误' });
+  api.getHotFeeds.mockReset().mockResolvedValue({ data: [{ id: 'hot-1', entityType: 'feed', message: '热榜动态', uid: '123', username: '酷友' }] });
+  const tab = { title: '头条', page_name: 'V9_HOME_TAB_HEADLINE', url: '/main/headline' };
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] });
+  await router.push('/');
+  const wrapper = mount(HomeTabPanel, {
+    props: { embedded: true, selected: true, tabKey: tab.page_name, tabs: [tab] },
+    global: { plugins: [router, createPinia()], stubs: { FeedCard: { props: ['feed'], template: '<article class="feed-card">{{ feed.message }}</article>' }, FeedVideoCard: true, AppImage: true } },
+  });
+  try {
+    await flushPromises();
+    expect(wrapper.get('.feed-degrade-notice').text()).toContain('当前显示热榜内容');
+    expect(wrapper.get('.feed-card').text()).toBe('热榜动态');
+  } finally {
+    wrapper.unmount();
+    vi.restoreAllMocks();
+  }
 });
 
 
