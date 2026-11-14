@@ -4854,12 +4854,23 @@ fn install_update_windows(app: &tauri::AppHandle, installer_path: String, portab
             .open(&write_probe)
             .map_err(|error| format!("便携版所在目录不可写，无法自动更新：{error}"))?;
         let _ = std::fs::remove_file(write_probe);
-        std::process::Command::new(&canonical)
+        // 更新助手是从更新目录直接启动的新版本本体，加载期就需要 WebView2Loader.dll。
+        // 便携版所在的目录带这个 DLL，必须同步到更新目录，否则助手会以 0xC0000135 静默退出，更新看起来毫无反应。
+        stage_portable_update_loader(&current_dir, &expected_dir)?;
+        let mut child = std::process::Command::new(&canonical)
             .arg("--coolapk-apply-portable-update")
             .arg(std::process::id().to_string())
             .arg(current_exe)
             .spawn()
             .map_err(|error| format!("启动便携版更新助手失败：{error}"))?;
+        // 助手启动后应进入“等待旧进程退出”的状态；立刻退出说明依赖仍然缺失。
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "更新助手启动后立即退出（退出码 {}），可能是更新包依赖缺失，请手动下载新版",
+                status.code().unwrap_or(-1)
+            ));
+        }
         return Ok(());
     }
 
@@ -4867,6 +4878,37 @@ fn install_update_windows(app: &tauri::AppHandle, installer_path: String, portab
         .args(["/S", "/UPDATE", "/R"])
         .spawn()
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 便携版更新包是单个 EXE，但它在加载期就依赖 WebView2Loader.dll。
+/// 更新助手从更新目录直接启动，因此必须把便携版目录里的 DLL 一起放到更新包旁边。
+#[cfg(target_os = "windows")]
+fn stage_portable_update_loader(
+    app_dir: &std::path::Path,
+    update_dir: &std::path::Path,
+) -> Result<(), String> {
+    let source = app_dir.join("WebView2Loader.dll");
+    if !source.is_file() {
+        return Ok(());
+    }
+    let target = update_dir.join("WebView2Loader.dll");
+    let same_size = match (std::fs::metadata(&target), std::fs::metadata(&source)) {
+        (Ok(staged), Ok(origin)) => staged.len() == origin.len(),
+        _ => false,
+    };
+    if same_size {
+        return Ok(());
+    }
+    if let Err(error) = std::fs::copy(&source, &target) {
+        // 目标 DLL 已被上一次的助手进程加载时无法覆盖，但文件本身已经可用。
+        if target.is_file() {
+            return Ok(());
+        }
+        return Err(format!(
+            "准备更新助手依赖失败：{error}，请手动下载新版安装包"
+        ));
+    }
     Ok(())
 }
 
